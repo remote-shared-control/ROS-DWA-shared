@@ -102,7 +102,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.22  # [m]
+        self.robot_radius = 0.23  # [m]
         self.obs_radius =0.1
         self.x = 0.0
         self.y = 0.0
@@ -340,16 +340,16 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
                 continue
             
             final_cost = to_human_cost + speed_cost + ob_cost
-            if log_writer and RECORDER is not None:
-                log_writer.writerow([
-                    round(step, 3),                   # ← 第几次 while
-                    round(v, 2),
-                    round(w, 2),
-                    to_human_cost,
-                    speed_cost,
-                    ob_cost,
-                    final_cost
-                ])
+            # if log_writer and RECORDER is not None:
+            #     log_writer.writerow([
+            #         round(step, 3),                   # ← 第几次 while
+            #         round(v, 2),
+            #         round(w, 2),
+            #         to_human_cost,
+            #         speed_cost,
+            #         ob_cost,
+            #         final_cost
+            #     ])
 
             # search minimum trajectory     ##最大代价
             if max_cost <= final_cost:
@@ -663,11 +663,14 @@ def main():
 
     pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
 
-    x_value_pub = rospy.Publisher('/min_d', Float32, queue_size = 1)
     # sub_obs = rospy.Subscriber("/gazebo/base_collision",Contact,StringMessageCounter.callbackobs,queue_size=10)
     pub_line = rospy.Publisher('~line_list', Marker, queue_size=10)
     pub_line_human = rospy.Publisher('~line_list_human', Marker, queue_size=10)
     marker_pub = rospy.Publisher('visualization_marker', Marker, queue_size=10)
+    
+    rospy.loginfo("Waiting for first LaserScan...")
+    rospy.wait_for_message("/scan", LaserScan)
+    rospy.loginfo("LaserScan received.")
     
     speed = Twist()
     # change_goal(config,rand.get_next())

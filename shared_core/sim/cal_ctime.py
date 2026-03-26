@@ -4,9 +4,7 @@ import numpy as np
 from gazebo_msgs.msg import ModelStates
 import math
 
-x,y=0.0,0.0
-v,w ,theta=0.0,0.0,0.0
-T=20.0
+
 
 
 class Config:
@@ -19,6 +17,7 @@ class CubeReader:
 
         self.config = config
         self.ignore_prefix = ["turtlebot3", "ground_plane","wall"]
+        self.target_prefix = "human"
         self.data = None        # None 表示没有任何障碍物信息
         rospy.Subscriber("/gazebo/model_states", ModelStates, self.callback)
 
@@ -72,7 +71,9 @@ class CubeReader:
         for i, name in enumerate(msg.name):
 
             # 忽略 robot / plant / ground_plane
-            if any(name.startswith(prefix) for prefix in self.ignore_prefix):
+            # if any(name.startswith(prefix) for prefix in self.ignore_prefix):
+            #     continue
+            if self.target_prefix not in name:
                 continue
 
             # # 只处理 cube
@@ -86,10 +87,10 @@ class CubeReader:
             vertices = self.get_expanded_vertices_2d(pose)
 
             # vx, vy（统一保留小数点后三位）
-            # vx = round(twist.linear.x, 3)
-            # vy = round(twist.linear.y, 3)
-            vx = -1.0
-            vy = 0.0
+            vx = round(twist.linear.x, 3)
+            vy = round(twist.linear.y, 3)
+            # vx = -1.0
+            # vy = 0.0
 
             # 存储格式：[index, p1, p2, p3, p4, vx, vy]
             row = [obs_index] + vertices + [vx, vy]
@@ -554,6 +555,9 @@ if __name__ == "__main__":
     config = Config()
     cube=CubeReader(config)
     i=0
+    x,y=0.0,0.0
+    v,w ,theta=0.0,0.0,0.0
+    T=20.0
     while not rospy.is_shutdown():
         time=cal_time(cube,x, y, theta, v, w, T)
 

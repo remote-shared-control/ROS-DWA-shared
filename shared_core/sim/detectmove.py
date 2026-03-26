@@ -14,29 +14,36 @@ class GazeboObsReader:
     def __init__(self, config):
         self.config = config
 
-        self.ignore_prefix = ["turtlebot3", "ground_plane","wall"]
+        # 只读取 human 模型
+        self.target_prefix = "human"
 
         self.obs_info = np.zeros((0, 6))  # x, y, vx, vy, radius, id
         self.moving_future = None        # 保存 num_obs × num_steps × 2
 
         rospy.Subscriber("/gazebo/model_states", ModelStates, self.callback)
 
+
     def filter_models(self, names, poses, twists):
-        """过滤掉 turtlebot3 和 ground，并组装obs_info"""
+        """只保留 human 模型并组装obs_info"""
 
         obs_list = []
 
         id_counter = 0
         for i, name in enumerate(names):
-            if any(name.startswith(p) for p in self.ignore_prefix):
+
+            # 只读取包含 human 的模型
+            if self.target_prefix not in name:
                 continue
 
             x = poses[i].position.x
             y = poses[i].position.y
             # vx = twists[i].linear.x
             # vy = twists[i].linear.y
-            vx = -1.0
-            vy = 0.0
+            vx = round(twists[i].linear.x, 3)
+            vy = round(twists[i].linear.y, 3)
+            # vx = -1.0
+            # vy = 0.0
+
             obs_list.append([x, y, vx, vy, self.config.obs_radius, id_counter])
             id_counter += 1
 

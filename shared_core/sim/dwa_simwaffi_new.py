@@ -29,6 +29,7 @@ import json
 from gazebo_msgs.srv import SetModelState
 from gazebo_msgs.msg import ModelState
 from distancetime import *
+from lidar3d import *
 # import argparse
 # parser = argparse.ArgumentParser(description="设置参数")
 
@@ -66,19 +67,20 @@ class Config():
         # robot parameter
         #NOTE good params:
         #NOTE 0.55,0.1,1.0,1.6,3.2,0.15,0.05,0.1,1.7,2.4,0.1,3.2,0.18
-        self.max_speed = 0.25  # [m/s]
-        self.min_speed = 0.0  # [m/s]
+        self.max_speed = 0.6  # [m/s]
+        self.min_speed = -0.2  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
         self.max_yawrate = 1.2  # [rad/s]
         self.max_accel = 2.5  # [m/ss]
         self.max_dyawrate = 3.2  # [rad/ss]
         ##################################################33
-        self.v_reso = 0.05  # [m/s]
+        self.v_reso = 0.2  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
         self.yawrate_reso = 0.05  # [rad/s]
         #######################################################
         self.dt = 0.4  # [s]
         self.dtsys = 0.05
+        self.predict_time_static = 2.4  # [s]
         self.predict_time = 14.8  # [s]
         self.showpredict_time = 3.0  # [s]
         self.showdt = 1.0
@@ -94,16 +96,18 @@ class Config():
 
         self.to_human_cost_gain = 1.0 #lower = detour
         self.speed_cost_gain = 1.0 #lower = faster
-        self.obs_cost_gain = 1.0 #lower z= fearless
+        self.obs_cost_gain = 2.0 #lower z= fearless
         self.move_obs_gain = 2.0
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.22  # [m]
-        self.movetimemin = 5.0
-        self.cube_half_size=0.1
+        self.robot_radius = 0.23  # [m]
+        self.movetimemin = 2.4
+        self.cube_half_size=0.3
+
+        
         self.x = 0.0
         self.y = 0.0
         self.th = 0.0
@@ -118,6 +122,9 @@ class Config():
         self.prev_x0= 0.0
         self.prev_y0= 0.0
         self.distance0=0.0
+        self.human=Twist()
+        self.human.linear.x=0.0
+        self.human.angular.z=0.0
         self.xy = set()
         self.r = rospy.Rate(20)
 
@@ -135,7 +142,23 @@ class Config():
         self.th = round(theta, 3)
         self.xy.add((self.x,self.y))
 
+    def share1(self,vel_msg):# human command get 获取人类指令
+        # global human_r
+        global inputkey
 
+        self.human.linear.x=vel_msg.linear.x
+        self.human.angular.z=vel_msg.angular.z
+
+        # if human.linear.x<-0.08:
+        #     human.linear.x=-0.08
+
+        if self.human.linear.x<self.min_speed:
+            self.human.linear.x=self.min_speed
+        
+        if self.human.linear.x<=0.001 and self.human.linear.x>=-0.001:
+            self.human.linear.x = 0.0
+        # human_angle=cal_angle(human.linear.x,human.angular.z)
+        # human_r=math.atan2(human.angular.z,human.linear.x)
 
 
     # Callback for attaining goal co-ordinates from Rviz Publish Point #rviz中设置目标点
@@ -143,66 +166,65 @@ class Config():
         self.goalX = msg.point.x
         self.goalY = msg.point.y
 
-class Obstacles():
-    def __init__(self):
-        # Set of coordinates of obstacles in view
-        self.obst = set()
-        self.obs1 = set()
-        self.obs_last=set()
-        self.minx = 3.5
-        self.deltx = 0.15
-        self.index = 0
-        self.pattern = 0
-        # self.obstacle_list = []  # 先用列表存储，再一次性加入 set
+# class Obstacles():
+#     def __init__(self):
+#         # Set of coordinates of obstacles in view
+#         self.obst = set()
+#         self.obs1 = set()
+#         self.obs_last=set()
+#         self.minx = 3.5
+#         self.deltx = 0.15
+#         self.index = 0
+#         self.pattern = 0
 
 
-    def assignObs(self, msg, config):
+#     def assignObs(self, msg, config):
 
-        deg = len(msg.ranges)   # Number of degrees - varies in Sim vs real world
-        # print("Laser degree length {}".format(deg))
-        self.obst = set()   # reset the obstacle set to only keep visible objects
+#         deg = len(msg.ranges)   # Number of degrees - varies in Sim vs real world
+#         # print("Laser degree length {}".format(deg))
+#         self.obst = set()   # reset the obstacle set to only keep visible objects
 
-        for i in range(len(msg.ranges)):
-            if msg.ranges[i]>config.maxdect or msg.ranges[i] == float('Inf'):
-                continue
-            elif np.isnan(msg.ranges[i]):
-                distance = config.mindect
-            elif msg.ranges[i]<config.mindect:
-                continue
-            else:
-                distance = msg.ranges[i]
+#         for i in range(len(msg.ranges)):
+#             if msg.ranges[i]>config.maxdect or msg.ranges[i] == float('Inf'):
+#                 continue
+#             elif np.isnan(msg.ranges[i]):
+#                 distance = config.mindect
+#             elif msg.ranges[i]<config.mindect:
+#                 continue
+#             else:
+#                 distance = msg.ranges[i]
 
-            #degree and rad
-            deg = (360)/len(msg.ranges)
-            rad = (2*math.pi)/len(msg.ranges)
-            objTheta_rad = rad * i
-            objTheta_deg = deg * i
+#             #degree and rad
+#             deg = (360)/len(msg.ranges)
+#             rad = (2*math.pi)/len(msg.ranges)
+#             objTheta_rad = rad * i
+#             objTheta_deg = deg * i
 
-            #local(robot)
-            obsX_robo = distance * math.cos(abs(objTheta_rad))
-            obsY_robo = distance * math.sin(abs(objTheta_rad))
+#             #local(robot)
+#             obsX_robo = distance * math.cos(abs(objTheta_rad))
+#             obsY_robo = distance * math.sin(abs(objTheta_rad))
 
-            #global
-            obsX = obsX_robo * math.cos(config.th) - obsY_robo * math.sin(config.th) + config.x
-            obsY = obsX_robo * math.sin(config.th) + obsY_robo * math.cos(config.th) + config.y
+#             #global
+#             obsX = obsX_robo * math.cos(config.th) - obsY_robo * math.sin(config.th) + config.x
+#             obsY = obsX_robo * math.sin(config.th) + obsY_robo * math.cos(config.th) + config.y
 
-            # all obastacle data
-            self.obst.add((obsX,obsY))
-        if config.distance0>self.deltx:
-            if self.index == 0:
-                self.obs1 = self.obst.copy()
-            # elif self.index == 1:
-            #     self.obs2 = self.obst.copy()
-            self.index = (self.index + 1) % 1
-            config.prev_x0=config.x
-            config.prev_y0=config.y
-        if self.pattern==1:
-            self.obst= self.obs1 | self.obst
+#             # all obastacle data
+#             self.obst.add((obsX,obsY))
+#         if config.distance0>self.deltx:
+#             if self.index == 0:
+#                 self.obs1 = self.obst.copy()
+#             # elif self.index == 1:
+#             #     self.obs2 = self.obst.copy()
+#             self.index = (self.index + 1) % 1
+#             config.prev_x0=config.x
+#             config.prev_y0=config.y
+#         if self.pattern==1:
+#             self.obst= self.obs1 | self.obst
 
-        # if len(self.obs_last) - len(self.obst)>50:
-        #     self.obst=self.obs_last | self.obst
-        # else:
-        #     self.obs_last=self.obst.copy()
+#         # if len(self.obs_last) - len(self.obst)>50:
+#         #     self.obst=self.obs_last | self.obst
+#         # else:
+#         #     self.obs_last=self.obst.copy()
 
 
 
@@ -293,24 +315,13 @@ def calc_trajectory(xinit, v, y, config):
     traj = np.array(x)  # many motion models stored per trajectory
     time = 0
 
-    while time <= config.predict_time:
+    while time <= config.predict_time_static:
         # store each motion model along a trajectory
         x = motion(x, [v, y], config.dt)
         traj = np.vstack((traj, x))
         time += config.dt # next sample
 
     return traj
-
-def calc_angle_fromtraj(v, y, config):
-
-    x = np.array([config.x,config.y,config.th,v,y])
-    time = 0
-    while time <= config.predict_time:
-        # store each motion model along a trajectory
-        x = motion(x, [v, y], config.dt)
-        time += config.dt # next sample
-
-    return x[0],x[1]
 
 
 ################################################################################
@@ -323,7 +334,7 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     max_cost = 0.0
     max_u = u
     max_u[0] = 0.0 #no way can be chosen
-    max_u[1] = human.angular.z
+    max_u[1] = config.human.angular.z
     global angle_robot
     # evaluate all trajectory with sampled input in dynamic window
     for v in vs:
@@ -333,9 +344,10 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
 
             to_human_cost = (1-calc_to_human_cost(v,w,config,4)) * config.to_human_cost_gain
 
-            speed_cost = config.speed_cost_gain *(1-abs(human.linear.x - v)/(config.max_speed-config.min_speed))
+            speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
 
             ob_cost = calc_obstacle_cost(traj, ob, config) * config.obs_cost_gain
+            # ob_cost = 0
 
             ob_movecost=cal_time(cube,config.x, config.y, config.th, v, w, config.predict_time)
             ob_movecost=config.move_obs_gain*(ob_movecost-config.movetimemin)/(config.predict_time-config.movetimemin)
@@ -346,16 +358,16 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
 
             final_cost = to_human_cost + speed_cost + ob_movecost+ob_cost
 
-            if log_writer is not None:
-                log_writer.writerow([
-                    round(step, 3),                   # ← 第几次 while
-                    round(v, 2),
-                    round(w, 2),
-                    to_human_cost,
-                    speed_cost,
-                    ob_movecost,
-                    final_cost
-                ])
+            # if log_writer is not None:
+            #     log_writer.writerow([
+            #         round(step, 3),                   # ← 第几次 while
+            #         round(v, 2),
+            #         round(w, 2),
+            #         to_human_cost,
+            #         speed_cost,
+            #         ob_movecost,
+            #         final_cost
+            #     ])
 
             # search minimum trajectory     ##最大代价
             if max_cost <= final_cost:
@@ -364,7 +376,7 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     # if max_u[0]==0.0:
     #     max_u[1]=human.angular.z
     show_trajectory(xinit, max_u[0], max_u[1], config)
-    show_trajectory_human(xinit, human.linear.x, human.angular.z, config)
+    show_trajectory_human(xinit, config.human.linear.x, config.human.angular.z, config)
     return max_u
 #################################################################################
 
@@ -396,13 +408,9 @@ def calc_obstacle_cost(traj, ob, config):
 
 ############################################################################
 def calc_to_human_cost( v, w,config,n):
-    global human_angle
 
     if n==4:# w minus directly
-        robot_angle=w
-        cost = abs(human_angle-robot_angle)/(config.max_yawrate*2)
-    elif n==5:
-        cost=abs(math.atan2(w,v)-human_r)/math.pi
+        cost = abs(config.human.angular.z-w)/(config.max_yawrate*2)
 
     return cost
 ##################################################################################
@@ -425,30 +433,7 @@ def atGoal(config):
     return 0
 
 
-human_angle=0
 yici=1
-
-def share1(vel_msg):# human command get 获取人类指令
-    global human
-    global human_r
-    global inputkey
-    global human_angle
-
-    human.linear.x=vel_msg.linear.x
-    human.angular.z=vel_msg.angular.z
-
-    # if human.linear.x<-0.08:
-    #     human.linear.x=-0.08
-
-    if human.linear.x<0.0:
-        human.linear.x=0.0
-    human_angle=human.angular.z
-    if human.linear.x<=0.001 and human.linear.x>=-0.001:
-        human.linear.x = 0.0
-    # human_angle=cal_angle(human.linear.x,human.angular.z)
-    human_r=math.atan2(human.angular.z,human.linear.x)
-
-
 
 
 
@@ -528,10 +513,7 @@ def h_line(num):
 
 
 
-human=Twist()
-human.linear.x=0.0
-human.angular.z=0.0
-human_r=float("inf")
+
 inputkey=0
 write=0
 
@@ -625,7 +607,7 @@ def main():
     # rand=RandomNumberGenerator()
     config = Config()
     # position of obstacles
-    obs = Obstacles()
+    # obs = Obstacles()
     cube=CubeReader(config)
     counter = StringMessageCounter()
     # if chizu=="4":
@@ -640,15 +622,15 @@ def main():
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
 
-
+    
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
-    subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
-    sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,share1,queue_size=1)
+    # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
+    sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,config.share1,queue_size=1)
 
     pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
-
-    x_value_pub = rospy.Publisher('/min_d', Float32, queue_size = 1)
+    processor = Mid360Processor()
+    
     # sub_obs = rospy.Subscriber("/gazebo/base_collision",Contact,StringMessageCounter.callbackobs,queue_size=10)
     pub_line = rospy.Publisher('~line_list', Marker, queue_size=10)
     pub_line_human = rospy.Publisher('~line_list_human', Marker, queue_size=10)
@@ -670,7 +652,8 @@ def main():
         current_time = rospy.get_time() - start_time
 
         if (inputkey== 1):
-            u = dwa_control(x, u, config, obs.obst,cube,step=current_time,log_writer=log_writer)
+            # u = dwa_control(x, u, config, obs.obst,cube,step=current_time,log_writer=log_writer)
+            u = dwa_control(x, u, config, processor.xy_set,cube,step=current_time,log_writer=log_writer)
             x[0] = config.x
             x[1] = config.y
             x[2] = config.th
@@ -685,8 +668,8 @@ def main():
         
         else:
             # if 0 then do directly
-            speed.linear.x = human.linear.x
-            speed.angular.z = human.angular.z
+            speed.linear.x = config.human.linear.x
+            speed.angular.z = config.human.angular.z
         # if yici>0:
         #     marker_pub.publish(markers)
         pub.publish(speed)

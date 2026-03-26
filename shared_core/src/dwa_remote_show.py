@@ -145,7 +145,7 @@ class Obstacles():
                 continue
             elif np.isnan(msg.ranges[i]):
                 distance = config.mindect
-            elif msg.ranges[i]<config.mindect:
+            elif msg.ranges[i]<0.11:
                 continue
             else:
                 distance = msg.ranges[i]
