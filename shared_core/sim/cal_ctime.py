@@ -15,119 +15,108 @@ class Config:
 class CubeReader:
     def __init__(self, config):
 
+        self.robot_radius_cal = 0.2
         self.config = config
-        self.ignore_prefix = ["turtlebot3", "ground_plane","wall"]
-        self.target_prefix = "human"
-        self.data = None        # None 表示没有任何障碍物信息
-        rospy.Subscriber("/gazebo/model_states", ModelStates, self.callback)
+        self.threshold=5.0
+        self.data = None
+        self.pose_data = None
+
+        rospy.Subscriber(
+            "/dynamic_obstacle_states",
+            ModelStates,
+            self.callback
+        )
 
     def get_yaw_from_quaternion(self, q):
         """
-        从四元数提取 yaw（只计算平面旋转）
+        从四元数提取 yaw
         """
-        # yaw (Z-axis rotation)
+
         siny = 2.0 * (q.w * q.z + q.x * q.y)
         cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+
         return math.atan2(siny, cosy)
 
     def get_expanded_vertices_2d(self, pose):
         """
-        完全在 2D 中计算膨胀后的 4 个顶点
+        计算膨胀后的 2D 顶点
         """
-        # 正确的膨胀半边长
-        expanded = self.config.cube_half_size + self.config.robot_radius
 
-        # 立方体局部 2D 顶点
+        expanded = self.config.cube_half_size + self.robot_radius_cal
+
         local = np.array([
             [-expanded, -expanded],
             [-expanded,  expanded],
             [ expanded,  expanded],
             [ expanded, -expanded]
-        ])  # shape (4,2)
+        ])
 
-        # 提取 yaw（只做 2D 旋转）
         yaw = self.get_yaw_from_quaternion(pose.orientation)
 
-        # 2D 旋转矩阵
         R = np.array([
             [math.cos(yaw), -math.sin(yaw)],
             [math.sin(yaw),  math.cos(yaw)]
         ])
 
-        # 应用旋转
         rotated = np.dot(local, R.T)
 
-        # 平移到世界坐标
         rotated[:, 0] += pose.position.x
         rotated[:, 1] += pose.position.y
 
-        # 转成列表格式，并统一保留小数点后三位
-        return [(round(p[0], 3), round(p[1], 3)) for p in rotated]
+        return [(round(p[0], 4), round(p[1], 4)) for p in rotated]
 
     def callback(self, msg):
+
         new_data = []
+        new_pose_data = []
+
         obs_index = 1
 
-        for i, name in enumerate(msg.name):
+        # 遍历所有 Gazebo 模型
+        for i, model_name in enumerate(msg.name):
 
-            # 忽略 robot / plant / ground_plane
-            # if any(name.startswith(prefix) for prefix in self.ignore_prefix):
-            #     continue
-            if self.target_prefix not in name:
+            # 只处理名字包含 obstacle 的模型
+            if "obstacle" not in model_name:
                 continue
-
-            # # 只处理 cube
-            # if "cube" not in name.lower():
-            #     continue
 
             pose = msg.pose[i]
             twist = msg.twist[i]
-
-            # 计算二维旋转膨胀后的四个顶点
+            dx=pose.position.x-self.config.x
+            dy=pose.position.y-self.config.y
+            if dx*dx+dy*dy>self.threshold*self.threshold:
+                continue
+            # 计算膨胀矩形
             vertices = self.get_expanded_vertices_2d(pose)
 
-            # vx, vy（统一保留小数点后三位）
+            # 速度
             vx = round(twist.linear.x, 3)
             vy = round(twist.linear.y, 3)
-            # vx = -1.0
-            # vy = 0.0
 
-            # 存储格式：[index, p1, p2, p3, p4, vx, vy]
+            # 保存数据
             row = [obs_index] + vertices + [vx, vy]
+
+            pose_row = [
+                obs_index,
+                round(pose.position.x, 3),
+                round(pose.position.y, 3)
+            ]
+
             new_data.append(row)
+            new_pose_data.append(pose_row)
+
+            # 调试输出
+            # print(f"{model_name}: v=({vx}, {vy})")
 
             obs_index += 1
 
-        # half_size = 2.5
-        # vx = 0.0
-        # vy = 0.0
-
-        # def make_square(cx, cy, h):
-        #     return [
-        #         (round(cx - h, 3), round(cy - h, 3)),
-        #         (round(cx - h, 3), round(cy + h, 3)),
-        #         (round(cx + h, 3), round(cy + h, 3)),
-        #         (round(cx + h, 3), round(cy - h, 3))
-        #     ]
-
-        # # 障碍物1：中心 (0, 2.8)
-        # v1 = make_square(0.0, 2.8, half_size+self.config.robot_radius)
-        # new_data.append([obs_index] + v1 + [vx, vy])
-        # obs_index += 1
-
-        # # 障碍物2：中心 (0, -5.9)
-        # v2 = make_square(0.0, -5.9, half_size+self.config.robot_radius)
-        # new_data.append([obs_index] + v2 + [vx, vy])
-        # obs_index += 1
-        # 调试输出 new_data
-        # print("new_data:", new_data)
-
+        # 无障碍物
         if len(new_data) == 0:
             self.data = None
+            self.pose_data = None
+
         else:
             self.data = new_data
-
-        #rospy.loginfo("二维膨胀障碍物顶点和速度:\n{}".format(self.data_array))
+            self.pose_data = new_pose_data
 #############################################333
 
 

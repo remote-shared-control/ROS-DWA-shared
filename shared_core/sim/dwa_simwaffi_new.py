@@ -10,6 +10,7 @@
 # before beginning the loop. If you do not want obstacles, create an empty set.
 # Implentation based off Fox et al.'s paper, The Dynamic Window Approach to 
 # Collision Avoidance (1997).
+from __future__ import annotations
 import rospy
 import math
 from geometry_msgs.msg import Twist, Point
@@ -67,22 +68,23 @@ class Config():
         # robot parameter
         #NOTE good params:
         #NOTE 0.55,0.1,1.0,1.6,3.2,0.15,0.05,0.1,1.7,2.4,0.1,3.2,0.18
-        self.max_speed = 0.6  # [m/s]
-        self.min_speed = -0.2  # [m/s]
+        self.max_speed = 1.0  # [m/s]
+        self.min_speed = -1.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
-        self.max_yawrate = 1.2  # [rad/s]
-        self.max_accel = 2.5  # [m/ss]
-        self.max_dyawrate = 3.2  # [rad/ss]
+        self.max_yawrate = 1.8  # [rad/s]
+        self.max_accel = 0.6  # [m/ss]
+        self.max_dyawrate = 2.5  # [rad/ss]
         ##################################################33
         self.v_reso = 0.2  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
-        self.yawrate_reso = 0.05  # [rad/s]
+        self.yawrate_reso = 0.2  # [rad/s]
         #######################################################
         self.dt = 0.4  # [s]
-        self.dtsys = 0.05
+        self.dtsys = 0.1  # [s]
         self.predict_time_static = 2.4  # [s]
-        self.predict_time = 14.8  # [s]
+        self.predict_time = 12.0  # [s]
         self.showpredict_time = 3.0  # [s]
+        self.movetimemin = 4.0
         self.showdt = 1.0
         self.goal_radius=0.4
         #########################################
@@ -96,22 +98,22 @@ class Config():
 
         self.to_human_cost_gain = 1.0 #lower = detour
         self.speed_cost_gain = 1.0 #lower = faster
-        self.obs_cost_gain = 2.0 #lower z= fearless
+        self.obs_cost_gain = 1.0 #lower z= fearless
         self.move_obs_gain = 2.0
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.23  # [m]
-        self.movetimemin = 2.4
-        self.cube_half_size=0.3
+        self.robot_radius = 0.22  # [m]
+
+        self.cube_half_size=0.15
 
         
         self.x = 0.0
         self.y = 0.0
         self.th = 0.0
-        self.goalX = 0.0
+        self.goalX = 9.0
         self.goalY = 0.0
         self.prev_x = 0.0
         self.prev_y = 0.0
@@ -125,7 +127,7 @@ class Config():
         self.human=Twist()
         self.human.linear.x=0.0
         self.human.angular.z=0.0
-        self.xy = set()
+        # self.xy = set()
         self.r = rospy.Rate(20)
 
     # Callback for Odometry
@@ -140,7 +142,7 @@ class Config():
             euler_from_quaternion ([rot_q.x,rot_q.y,rot_q.z,rot_q.w])
         # 保留三位小数精度
         self.th = round(theta, 3)
-        self.xy.add((self.x,self.y))
+        # self.xy.add((self.x,self.y))
 
     def share1(self,vel_msg):# human command get 获取人类指令
         # global human_r
@@ -226,9 +228,39 @@ class Config():
 #         # else:
 #         #     self.obs_last=self.obst.copy()
 
+#################################################################### lidar plot
+# import time
+# import numpy as np
+# import matplotlib.pyplot as plt
 
+# plt.ion()
 
-        
+# def plot_loop(ob):
+
+#     if not hasattr(plot_loop, "initialized"):
+
+#         plot_loop.fig, plot_loop.ax = plt.subplots()
+
+#         plot_loop.scatter = plot_loop.ax.scatter([], [], s=1)
+
+#         plot_loop.ax.set_xlim(-10, 10)
+#         plot_loop.ax.set_ylim(-10, 10)
+#         plot_loop.ax.set_aspect('equal')
+
+#         plot_loop.initialized = True
+
+#     xs, ys = ob
+
+#     if xs.size > 0:
+#         offsets = np.column_stack((xs, ys))
+#     else:
+#         offsets = np.empty((0, 2))
+
+#     plot_loop.scatter.set_offsets(offsets)
+
+#     plot_loop.fig.canvas.draw_idle()
+#     plot_loop.fig.canvas.flush_events()
+##########################################################
 # Model to determine the expected position of the robot after moving along trajectory
 def motion(x, u, dt):
     # motion model
@@ -242,33 +274,85 @@ def motion(x, u, dt):
 # Determine the dynamic window from robot configurations
 def calc_dynamic_window(x, config):
 
-    # Dynamic window from robot specification
-    Vs = [config.min_speed, config.max_speed,
-          -config.max_yawrate, config.max_yawrate]
+    # -----------------------------
+    # Dynamic window limits
+    # -----------------------------
+    v_min = max(
+        config.min_speed,
+        x[3] - config.max_accel * config.dt
+    )
 
-    # Dynamic window from motion model
-    Vd = [x[3] - config.max_accel * config.dt,
-          x[3] + config.max_accel * config.dt,
-          x[4] - config.max_dyawrate * config.dt,
-          x[4] + config.max_dyawrate * config.dt]
+    v_max = min(
+        config.max_speed,
+        x[3] + config.max_accel * config.dt
+    )
 
-    #  [vmin, vmax, yawrate min, yawrate max]
-    dw = [max(Vs[0], Vd[0]), min(Vs[1], Vd[1]),
-          max(Vs[2], Vd[2]), min(Vs[3], Vd[3])]
+    w_min = max(
+        -config.max_yawrate,
+        x[4] - config.max_dyawrate * config.dt
+    )
 
-    vs = list(np.arange(dw[0], dw[1] + config.v_reso, config.v_reso))
-    ws = list(np.arange(dw[2], dw[3] + config.yawrate_reso, config.yawrate_reso))
+    w_max = min(
+        config.max_yawrate,
+        x[4] + config.max_dyawrate * config.dt
+    )
 
-    if dw[0] <= 0.0 <= dw[1]:
-        vs.append(0.0)
-    if dw[2] <= 0.0 <= dw[3]:
-        ws.append(0.0)
+    # -----------------------------
+    # Sampling number
+    # -----------------------------
+    num_v = max(
+        2,
+        int((v_max - v_min) / config.v_reso) + 1
+    )
 
-    vs = sorted(set(round(v, 2) for v in vs
-                    if dw[0] - 1e-6 <= v <= dw[1] + 1e-6))
-    ws = sorted(set(round(w, 2) for w in ws
-                    if dw[2] - 1e-6 <= w <= dw[3] + 1e-6))
-    return vs,ws
+    num_w = max(
+        2,
+        int((w_max - w_min) / config.yawrate_reso) + 1
+    )
+
+    # -----------------------------
+    # Velocity sampling
+    # -----------------------------
+    vs = np.linspace(v_min, v_max, num_v)
+    ws = np.linspace(w_min, w_max, num_w)
+
+    # -----------------------------
+    # Ensure exact zero exists
+    # -----------------------------
+    EPS = 1e-6
+
+    # linear velocity
+    if v_min <= 0.0 <= v_max:
+        if not np.any(np.abs(vs) < EPS):
+            vs = np.concatenate((vs, [0.0]))
+
+    # angular velocity
+    if w_min <= 0.0 <= w_max:
+        if not np.any(np.abs(ws) < EPS):
+            ws = np.concatenate((ws, [0.0]))
+
+    # -----------------------------
+    # Angular velocity filtering
+    # -----------------------------
+    MIN_W = 0.05
+
+    # floating-point correction
+    ws[np.abs(ws) < EPS] = 0.0
+
+    # keep:
+    #   1. effective yawrate
+    #   2. exact zero
+    mask = (np.abs(ws) > MIN_W) | (ws == 0.0)
+
+    ws = ws[mask]
+
+    # -----------------------------
+    # Sort after concatenate
+    # -----------------------------
+    vs.sort()
+    ws.sort()
+
+    return vs, ws
 
 list_x=[]
 list_y=[]
@@ -347,12 +431,12 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
             speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
 
             ob_cost = calc_obstacle_cost(traj, ob, config) * config.obs_cost_gain
-            # ob_cost = 0
 
-            ob_movecost=cal_time(cube,config.x, config.y, config.th, v, w, config.predict_time)
-            ob_movecost=config.move_obs_gain*(ob_movecost-config.movetimemin)/(config.predict_time-config.movetimemin)
             if np.isinf(ob_cost):
                 continue
+            ob_movecost=cal_time(cube,config.x, config.y, config.th, v, w, config.predict_time)
+            ob_movecost=config.move_obs_gain*(ob_movecost-config.movetimemin)/(config.predict_time-config.movetimemin)
+            
             if ob_movecost<=0:
                 continue
 
@@ -383,28 +467,23 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
 
 
 # Calculate obstacle cost inf: collision, 0:free
-def calc_obstacle_cost(traj, ob, config):
-    skip_n = 1
-    minr = config.maxdect
-    
-    # Loop through every obstacle in set and calc Pythagorean distance
-    # Use robot radius to determine if collision
-    for ii in range(1, len(traj[:, 1]), skip_n):
-        for i in ob.copy():
-            ox = i[0]           ##障害物
-            oy = i[1]
-            dx = traj[ii, 0] - ox    ##轨迹
-            dy = traj[ii, 1] - oy
+def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], config) -> float:
+    ox_arr, oy_arr = ob
 
-            r = math.sqrt(dx**2 + dy**2)  ##距离
+    if ox_arr.size == 0 or oy_arr.size == 0:
+        return 1.0
+    tx = traj[1:, 0:1]   # (T, 1)
+    ty = traj[1:, 1:2]   # (T, 1)
 
-            if r <= config.robot_radius:
-                return float("-Inf")  # collision
+    dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2   # (T, N)
 
-            if minr >= r:
-                minr = r
+    if np.any(dist2 <= config.robot_radius**2):
+        return float("-Inf")
 
-    return (minr-config.robot_radius)/(config.maxdect-config.robot_radius)
+    # 截断：超过 maxdect 的距离不参与计算，等价于原来 minr = config.maxdect 的初始值
+    minr = min(np.sqrt(dist2.min()), config.maxdect)
+
+    return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 
 ############################################################################
 def calc_to_human_cost( v, w,config,n):
@@ -418,7 +497,8 @@ def calc_to_human_cost( v, w,config,n):
 # Begin DWA calculations
 def dwa_control(x, u, config, ob,cube,step, log_writer):
     # Dynamic Window control
-
+    # ob = remove_near_points(ob,cube.pose_data,threshold=1.0)
+    # plot_loop(ob)
     vs,ws = calc_dynamic_window(x, config)
 
     u = calc_final_input(x, u, vs,ws, config, ob,cube,step, log_writer)
@@ -427,8 +507,9 @@ def dwa_control(x, u, config, ob,cube,step, log_writer):
 
 def atGoal(config):
     # check at goal
-    if math.sqrt((config.x - config.goalX)**2 + (config.y - config.goalY)**2) \
-        <= config.goal_radius:
+    # if math.sqrt((config.x - config.goalX)**2 + (config.y - config.goalY)**2) \
+    #     <= config.goal_radius:
+    if config.x>= config.goalX:
         return 1
     return 0
 
@@ -511,7 +592,46 @@ def h_line(num):
         exec(f"line_point{i}.z = 0.0")
         exec(f"h_marker.points.append(line_point{i})")
 
+def remove_near_points(xy_set, pose_data, threshold=0.4):
 
+    x_points, y_points = xy_set
+
+    # 没有点云
+    if len(x_points) == 0:
+        return xy_set
+
+    # 没有障碍物
+    if pose_data is None or len(pose_data) == 0:
+        return xy_set
+
+    # 拼接为 (N,2)
+    points = np.column_stack((x_points, y_points))
+
+    # 初始全部保留
+    keep_mask = np.ones(len(points), dtype=bool)
+
+    for pose in pose_data:
+
+        obs_x = pose[1]
+        obs_y = pose[2]
+
+        # 计算距离平方
+        dist_sq = (
+            (points[:, 0] - obs_x) ** 2 +
+            (points[:, 1] - obs_y) ** 2
+        )
+
+        # 删除 <= threshold 的点
+        keep_mask &= (dist_sq > threshold ** 2)
+
+    # 过滤
+    filtered_points = points[keep_mask]
+
+    # 重新拆成 tuple[np.ndarray, np.ndarray]
+    return (
+        filtered_points[:, 0].astype(np.float32),
+        filtered_points[:, 1].astype(np.float32)
+    )
 
 
 inputkey=0
@@ -543,56 +663,11 @@ def listen_key():
         listener.join()
 
 
-def set_robot_position(model_name, position, orientation):
-    """
-    瞬间移动机器人到指定坐标
-    :param model_name: 模型名称 (例如 "robot")
-    :param position: 坐标 [x, y, z]
-    :param orientation: 四元数 [x, y, z, w]
-    """
-    # 等待服务
-    rospy.wait_for_service('/gazebo/set_model_state')
-    
-    try:
-        # 创建服务代理
-        set_state = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
-        
-        # 定义模型状态
-        state_msg = ModelState()
-        state_msg.model_name = model_name
-        state_msg.pose.position.x = position[0]
-        state_msg.pose.position.y = position[1]
-        state_msg.pose.position.z = position[2]
-        state_msg.pose.orientation.x = orientation[0]
-        state_msg.pose.orientation.y = orientation[1]
-        state_msg.pose.orientation.z = orientation[2]
-        state_msg.pose.orientation.w = orientation[3]
-        state_msg.twist.linear.x = 0.0
-        state_msg.twist.linear.y = 0.0
-        state_msg.twist.linear.z = 0.0
-        state_msg.twist.angular.x = 0.0
-        state_msg.twist.angular.y = 0.0
-        state_msg.twist.angular.z = 0.0
-        # 调用服务
-        resp = set_state(state_msg)
-        if resp.success:
-            rospy.loginfo(f"Successfully moved {model_name} to {position}")
-        else:
-            rospy.logwarn(f"Failed to move {model_name}: {resp.status_message}")
-    except rospy.ServiceException as e:
-        rospy.logerr(f"Service call failed: {e}")
-    cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
-    stop_cmd = Twist()
-    rate = rospy.Rate(10)
-    for _ in range(10):  # 连续发送一段时间，确保停止
-        cmd_vel_pub.publish(stop_cmd)
-        rate.sleep()
-
 def main():
     global yici
     global write
     print(__file__ + " start!!")
-    print("human is 0,share is 1")
+    print("human is 0,share is 1,have been 1 yet")
     inputkey=1
     # inputs=input()
     # if inputs=="0":
@@ -616,9 +691,10 @@ def main():
     #     print("changed OK")
 
     threading.Thread(target=listen_key, daemon=True).start()
-    model_name = "turtlebot3_waffle_pi"
+    # model_name = "turtlebot3_waffle_pi_addvio"
+    model_name = "limo"
     # 指定目标位置和方向 (四元数)
-    target_position = [0.0, 0.0, 0.0]  # x, y, z
+    target_position = [0.0, 0.0, 0.16]  # x, y, z
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
 
@@ -629,7 +705,7 @@ def main():
     sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,config.share1,queue_size=1)
 
     pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
-    processor = Mid360Processor()
+    processor = Mid360Processor(config.robot_radius)
     
     # sub_obs = rospy.Subscriber("/gazebo/base_collision",Contact,StringMessageCounter.callbackobs,queue_size=10)
     pub_line = rospy.Publisher('~line_list', Marker, queue_size=10)
@@ -674,7 +750,7 @@ def main():
         #     marker_pub.publish(markers)
         pub.publish(speed)
 
-        if write==1:
+        if atGoal(config)==1 or write==1:
             if yici>0:
                 print("YOU have arrive the goal point")
                 stop_rosbag()
@@ -683,6 +759,7 @@ def main():
 
                 # change_goal(config,rand.get_next())
                 # goal_sphere(config)
+                play_celebration_sound()
                 yici=0
             
         config.r.sleep()

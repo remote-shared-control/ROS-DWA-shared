@@ -20,7 +20,7 @@ class GazeboObsReader:
         self.obs_info = np.zeros((0, 6))  # x, y, vx, vy, radius, id
         self.moving_future = None        # 保存 num_obs × num_steps × 2
 
-        rospy.Subscriber("/gazebo/model_states", ModelStates, self.callback)
+        rospy.Subscriber("/dynamic_obstacle_states", ModelStates, self.callback)
 
 
     def filter_models(self, names, poses, twists):

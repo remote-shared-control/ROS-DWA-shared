@@ -268,7 +268,7 @@ def start_rosbag():
     :param output_file: rosbag 保存的文件路径，不需要后缀名
     """
     count=1
-    record_topics = ["/cmd_vel", "/cmd_vel_human", "/odom", "/min_d"]  # 话题
+    record_topics = ["/cmd_vel", "/cmd_vel_human", "/odom","/dynamic_obstacle_states"]  # 话题
 
     rosbag_dir = os.path.expanduser("~/rosbagpaper")  # Expands to /home/user/rosbag
     os.makedirs(rosbag_dir, exist_ok=True)  # Ensure directory exists

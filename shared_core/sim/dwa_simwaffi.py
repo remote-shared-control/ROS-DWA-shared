@@ -118,7 +118,7 @@ class Config():
         self.prev_x0= 0.0
         self.prev_y0= 0.0
         self.distance0=0.0
-        self.xy = set()
+        # self.xy = set()
         self.r = rospy.Rate(20)
 
     # Callback for Odometry
@@ -131,7 +131,7 @@ class Config():
         (roll,pitch,theta) = \
             euler_from_quaternion ([rot_q.x,rot_q.y,rot_q.z,rot_q.w])
         self.th = theta
-        self.xy.add((self.x,self.y))
+        # self.xy.add((self.x,self.y))
 
 
 
@@ -577,50 +577,6 @@ def listen_key():
     with keyboard.Listener(on_press=on_press) as listener:
         listener.join()
 
-def set_robot_position(model_name, position, orientation):
-    """
-    瞬间移动机器人到指定坐标
-    :param model_name: 模型名称 (例如 "robot")
-    :param position: 坐标 [x, y, z]
-    :param orientation: 四元数 [x, y, z, w]
-    """
-    # 等待服务
-    rospy.wait_for_service('/gazebo/set_model_state')
-    
-    try:
-        # 创建服务代理
-        set_state = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
-        
-        # 定义模型状态
-        state_msg = ModelState()
-        state_msg.model_name = model_name
-        state_msg.pose.position.x = position[0]
-        state_msg.pose.position.y = position[1]
-        state_msg.pose.position.z = position[2]
-        state_msg.pose.orientation.x = orientation[0]
-        state_msg.pose.orientation.y = orientation[1]
-        state_msg.pose.orientation.z = orientation[2]
-        state_msg.pose.orientation.w = orientation[3]
-        state_msg.twist.linear.x = 0.0
-        state_msg.twist.linear.y = 0.0
-        state_msg.twist.linear.z = 0.0
-        state_msg.twist.angular.x = 0.0
-        state_msg.twist.angular.y = 0.0
-        state_msg.twist.angular.z = 0.0
-        # 调用服务
-        resp = set_state(state_msg)
-        if resp.success:
-            rospy.loginfo(f"Successfully moved {model_name} to {position}")
-        else:
-            rospy.logwarn(f"Failed to move {model_name}: {resp.status_message}")
-    except rospy.ServiceException as e:
-        rospy.logerr(f"Service call failed: {e}")
-    cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
-    stop_cmd = Twist()
-    rate = rospy.Rate(10)
-    for _ in range(10):  # 连续发送一段时间，确保停止
-        cmd_vel_pub.publish(stop_cmd)
-        rate.sleep()
 
 def main():
     global yici
