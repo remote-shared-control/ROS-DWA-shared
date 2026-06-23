@@ -375,118 +375,117 @@ def point_in_quad(vertices: tuple, x: float, y: float) -> bool:
 
 ############################
 def compute_intersection_time(
-    vertices: tuple,  # ((x1,y1), (x2,y2), (x3,y3), (x4,y4))
-    v_rel: tuple,     # (vx, vy) 相对速度 = 机器人速度 - 障碍物速度
-    x: float,
-    y: float,
-    T: float
-) -> float:
+    vertices,
+    v_rel,
+    x,
+    y,
+    T
+):
     """
-    计算机器人与四边形障碍物的最短相交时间
-    
-    参数:
-        vertices: 四边形四个顶点 ((x1,y1), (x2,y2), (x3,y3), (x4,y4))
-        v_rel: 相对速度 (vx, vy) = 机器人速度 - 障碍物速度
-        x, y: 机器人起始位置
-        T: 最大时间
-    
-    返回:
-        最短相交时间，不相交返回T，起点在内部返回0
+    计算点机器人沿相对速度方向运动时，
+    与凸四边形边界首次相交的时间。
+
+    参数
+    ----
+    vertices : ((x1,y1),(x2,y2),(x3,y3),(x4,y4))
+        凸四边形顶点（顺时针或逆时针）
+    v_rel : (vx,vy)
+        相对速度 = robot_vel - obs_vel
+    x,y : float
+        机器人当前位置
+    T : float
+        最大预测时间
+
+    返回
+    ----
+    float
+        最早相交时间
+        无相交返回 T
     """
-    
-    # 解包
-    x1, y1 = vertices[0]
-    x2, y2 = vertices[1]
-    x3, y3 = vertices[2]
-    x4, y4 = vertices[3]
+
+    EPS = 1e-9
+
     vx, vy = v_rel
-    
-    # 预计算边向量
-    dx1 = x2 - x1
-    dy1 = y2 - y1
-    dx2 = x3 - x2
-    dy2 = y3 - y2
-    dx3 = x4 - x3
-    dy3 = y4 - y3
-    dx4 = x1 - x4
-    dy4 = y1 - y4
-    
-    
-    # 2. 静止且在外部
-    if vx == 0.0 and vy == 0.0:
+
+    # 相对静止
+    if abs(vx) < EPS and abs(vy) < EPS:
         return T
-    
-    # 3. 检查四条边的相交
+
     min_t = T
-    
-    # 边1
-    det1 = vx * dy1 - vy * dx1
-    if det1 != 0.0:
-        qx1 = x1 - x
-        qy1 = y1 - y
-        t_num1 = qx1 * dy1 - qy1 * dx1
-        if det1 > 0.0:
-            if t_num1 >= 0.0 and t_num1 < min_t * det1:
-                s_num1 = qx1 * vy - qy1 * vx
-                if s_num1 >= 0.0 and s_num1 <= det1:
-                    min_t = t_num1 / det1
+
+    # 四条边
+    for i in range(4):
+
+        x1, y1 = vertices[i]
+        x2, y2 = vertices[(i + 1) % 4]
+
+        dx = x2 - x1
+        dy = y2 - y1
+
+        qx = x1 - x
+        qy = y1 - y
+
+        det = vx * dy - vy * dx
+
+        # ==========================
+        # 平行情况
+        # ==========================
+        if abs(det) < EPS:
+
+            # 是否共线
+            cross = qx * vy - qy * vx
+
+            if abs(cross) > EPS:
+                continue
+
+            # ----------------------
+            # 共线
+            # ----------------------
+            vv = vx * vx + vy * vy
+
+            if vv < EPS:
+                continue
+
+            t1 = (qx * vx + qy * vy) / vv
+            t2 = ((x2 - x) * vx + (y2 - y) * vy) / vv
+
+            t_enter = min(t1, t2)
+            t_exit = max(t1, t2)
+
+            if t_exit < 0.0:
+                continue
+
+            t_hit = max(0.0, t_enter)
+
+            if t_hit < min_t:
+                min_t = t_hit
+
+            continue
+
+        # ==========================
+        # 普通相交
+        # ==========================
+        t_num = qx * dy - qy * dx
+        s_num = qx * vy - qy * vx
+
+        if det > 0.0:
+
+            if (
+                t_num >= 0.0 and
+                t_num <= min_t * det and
+                0.0 <= s_num <= det
+            ):
+                min_t = t_num / det
+
         else:
-            if t_num1 <= 0.0 and t_num1 > min_t * det1:
-                s_num1 = qx1 * vy - qy1 * vx
-                if s_num1 <= 0.0 and s_num1 >= det1:
-                    min_t = t_num1 / det1
-    
-    # 边2
-    det2 = vx * dy2 - vy * dx2
-    if det2 != 0.0:
-        qx2 = x2 - x
-        qy2 = y2 - y
-        t_num2 = qx2 * dy2 - qy2 * dx2
-        if det2 > 0.0:
-            if t_num2 >= 0.0 and t_num2 < min_t * det2:
-                s_num2 = qx2 * vy - qy2 * vx
-                if s_num2 >= 0.0 and s_num2 <= det2:
-                    min_t = t_num2 / det2
-        else:
-            if t_num2 <= 0.0 and t_num2 > min_t * det2:
-                s_num2 = qx2 * vy - qy2 * vx
-                if s_num2 <= 0.0 and s_num2 >= det2:
-                    min_t = t_num2 / det2
-    
-    # 边3
-    det3 = vx * dy3 - vy * dx3
-    if det3 != 0.0:
-        qx3 = x3 - x
-        qy3 = y3 - y
-        t_num3 = qx3 * dy3 - qy3 * dx3
-        if det3 > 0.0:
-            if t_num3 >= 0.0 and t_num3 < min_t * det3:
-                s_num3 = qx3 * vy - qy3 * vx
-                if s_num3 >= 0.0 and s_num3 <= det3:
-                    min_t = t_num3 / det3
-        else:
-            if t_num3 <= 0.0 and t_num3 > min_t * det3:
-                s_num3 = qx3 * vy - qy3 * vx
-                if s_num3 <= 0.0 and s_num3 >= det3:
-                    min_t = t_num3 / det3
-    
-    # 边4
-    det4 = vx * dy4 - vy * dx4
-    if det4 != 0.0:
-        qx4 = x4 - x
-        qy4 = y4 - y
-        t_num4 = qx4 * dy4 - qy4 * dx4
-        if det4 > 0.0:
-            if t_num4 >= 0.0 and t_num4 < min_t * det4:
-                s_num4 = qx4 * vy - qy4 * vx
-                if s_num4 >= 0.0 and s_num4 <= det4:
-                    min_t = t_num4 / det4
-        else:
-            if t_num4 <= 0.0 and t_num4 > min_t * det4:
-                s_num4 = qx4 * vy - qy4 * vx
-                if s_num4 <= 0.0 and s_num4 >= det4:
-                    min_t = t_num4 / det4
-    
+
+            if (
+                t_num <= 0.0 and
+                t_num >= min_t * det and
+                det <= s_num <= 0.0
+            ):
+                min_t = t_num / det
+
     return min_t
 
 

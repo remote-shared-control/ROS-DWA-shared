@@ -41,7 +41,7 @@ from lidar3d import *
 # args = parser.parse_args()
 import csv
 
-RECORDER = False
+RECORDER = True  # Set to True to enable CSV logging, False to disable
 
 if RECORDER:
     log_dir = "/home/frienkie/rosbagpaper"
@@ -71,19 +71,19 @@ class Config():
         self.max_speed = 1.0  # [m/s]
         self.min_speed = -1.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
-        self.max_yawrate = 1.8  # [rad/s]
-        self.max_accel = 0.6  # [m/ss]
-        self.max_dyawrate = 2.5  # [rad/ss]
+        self.max_yawrate = 1.4  # [rad/s]
+        self.max_accel = 0.8  # [m/ss]
+        self.max_dyawrate = 3.2  # [rad/ss]
         ##################################################33
         self.v_reso = 0.2  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
-        self.yawrate_reso = 0.2  # [rad/s]
+        self.yawrate_reso = 0.05  # [rad/s]
         #######################################################
-        self.dt = 0.4  # [s]
+        self.dt = 0.2  # [s]
         self.dtsys = 0.1  # [s]
-        self.predict_time_static = 2.4  # [s]
-        self.predict_time = 12.0  # [s]
-        self.showpredict_time = 3.0  # [s]
+        self.predict_time_static = 1.2  # [s]
+        self.predict_time = 7.0  # [s]
+        self.showpredict_time = 4.0  # [s]
         self.movetimemin = 4.0
         self.showdt = 1.0
         self.goal_radius=0.4
@@ -105,7 +105,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.22  # [m]
+        self.robot_radius = 0.21  # [m]
 
         self.cube_half_size=0.15
 
@@ -505,15 +505,6 @@ def dwa_control(x, u, config, ob,cube,step, log_writer):
 
     return u
 
-def atGoal(config):
-    # check at goal
-    # if math.sqrt((config.x - config.goalX)**2 + (config.y - config.goalY)**2) \
-    #     <= config.goal_radius:
-    if config.x>= config.goalX:
-        return 1
-    return 0
-
-
 yici=1
 
 
@@ -719,10 +710,11 @@ def main():
     x = np.array([config.x, config.y, config.th, 0.0, 0.0])
     # initial linear and angular velocities
     u = np.array([0.0, 0.0])
+    
+    start_time = rospy.get_time()
+    print("You can press y to stop and save rosbag when you need.")
     if RECORDER==True:
         file_value=start_rosbag()
-    #     print("You can press y to stop and save rosbag when you need.")
-    start_time = rospy.get_time()
     # runs until terminated externally
     while not rospy.is_shutdown():
         current_time = rospy.get_time() - start_time

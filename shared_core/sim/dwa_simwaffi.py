@@ -29,6 +29,7 @@ from gazebo_msgs.srv import SetModelState
 from gazebo_msgs.msg import ModelState
 import json
 from distancetime import *
+from lidar3d import *
 # import argparse
 # parser = argparse.ArgumentParser(description="设置参数")
 
@@ -68,7 +69,7 @@ class Config():
         # robot parameter
         #NOTE good params:
         #NOTE 0.55,0.1,1.0,1.6,3.2,0.15,0.05,0.1,1.7,2.4,0.1,3.2,0.18
-        self.max_speed = 0.25  # [m/s]
+        self.max_speed = 0.2  # [m/s]
         self.min_speed = 0.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
         self.max_yawrate = 1.2  # [rad/s]
@@ -141,66 +142,66 @@ class Config():
         self.goalX = msg.point.x
         self.goalY = msg.point.y
 
-class Obstacles():
-    def __init__(self):
-        # Set of coordinates of obstacles in view
-        self.obst = set()
-        self.obs1 = set()
-        self.obs_last=set()
-        self.minx = 3.5
-        self.deltx = 0.15
-        self.index = 0
-        self.pattern = 0
-        # self.obstacle_list = []  # 先用列表存储，再一次性加入 set
+# class Obstacles():
+#     def __init__(self):
+#         # Set of coordinates of obstacles in view
+#         self.obst = set()
+#         self.obs1 = set()
+#         self.obs_last=set()
+#         self.minx = 3.5
+#         self.deltx = 0.15
+#         self.index = 0
+#         self.pattern = 0
+#         # self.obstacle_list = []  # 先用列表存储，再一次性加入 set
 
 
-    def assignObs(self, msg, config):
+#     def assignObs(self, msg, config):
 
-        deg = len(msg.ranges)   # Number of degrees - varies in Sim vs real world
-        # print("Laser degree length {}".format(deg))
-        self.obst = set()   # reset the obstacle set to only keep visible objects
+#         deg = len(msg.ranges)   # Number of degrees - varies in Sim vs real world
+#         # print("Laser degree length {}".format(deg))
+#         self.obst = set()   # reset the obstacle set to only keep visible objects
 
-        for i in range(len(msg.ranges)):
-            if msg.ranges[i]>config.maxdect or msg.ranges[i] == float('Inf'):
-                continue
-            elif np.isnan(msg.ranges[i]):
-                distance = config.mindect
-            elif msg.ranges[i]<config.mindect:
-                continue
-            else:
-                distance = msg.ranges[i]
+#         for i in range(len(msg.ranges)):
+#             if msg.ranges[i]>config.maxdect or msg.ranges[i] == float('Inf'):
+#                 continue
+#             elif np.isnan(msg.ranges[i]):
+#                 distance = config.mindect
+#             elif msg.ranges[i]<config.mindect:
+#                 continue
+#             else:
+#                 distance = msg.ranges[i]
 
-            #degree and rad
-            deg = (360)/len(msg.ranges)
-            rad = (2*math.pi)/len(msg.ranges)
-            objTheta_rad = rad * i
-            objTheta_deg = deg * i
+#             #degree and rad
+#             deg = (360)/len(msg.ranges)
+#             rad = (2*math.pi)/len(msg.ranges)
+#             objTheta_rad = rad * i
+#             objTheta_deg = deg * i
 
-            #local(robot)
-            obsX_robo = distance * math.cos(abs(objTheta_rad))
-            obsY_robo = distance * math.sin(abs(objTheta_rad))
+#             #local(robot)
+#             obsX_robo = distance * math.cos(abs(objTheta_rad))
+#             obsY_robo = distance * math.sin(abs(objTheta_rad))
 
-            #global
-            obsX = obsX_robo * math.cos(config.th) - obsY_robo * math.sin(config.th) + config.x
-            obsY = obsX_robo * math.sin(config.th) + obsY_robo * math.cos(config.th) + config.y
+#             #global
+#             obsX = obsX_robo * math.cos(config.th) - obsY_robo * math.sin(config.th) + config.x
+#             obsY = obsX_robo * math.sin(config.th) + obsY_robo * math.cos(config.th) + config.y
 
-            # all obastacle data
-            self.obst.add((obsX,obsY))
-        if config.distance0>self.deltx:
-            if self.index == 0:
-                self.obs1 = self.obst.copy()
-            # elif self.index == 1:
-            #     self.obs2 = self.obst.copy()
-            self.index = (self.index + 1) % 1
-            config.prev_x0=config.x
-            config.prev_y0=config.y
-        if self.pattern==1:
-            self.obst= self.obs1 | self.obst
+#             # all obastacle data
+#             self.obst.add((obsX,obsY))
+#         if config.distance0>self.deltx:
+#             if self.index == 0:
+#                 self.obs1 = self.obst.copy()
+#             # elif self.index == 1:
+#             #     self.obs2 = self.obst.copy()
+#             self.index = (self.index + 1) % 1
+#             config.prev_x0=config.x
+#             config.prev_y0=config.y
+#         if self.pattern==1:
+#             self.obst= self.obs1 | self.obst
 
-        if len(self.obs_last) - len(self.obst)>50:
-            self.obst=self.obs_last | self.obst
-        else:
-            self.obs_last=self.obst.copy()
+#         if len(self.obs_last) - len(self.obst)>50:
+#             self.obst=self.obs_last | self.obst
+#         else:
+#             self.obs_last=self.obst.copy()
 
 
 
@@ -435,12 +436,6 @@ def dwa_control(x, u, config, ob,readob,step,log_writer):
 
     return u
 
-def atGoal(config):
-    # check at goal
-    if math.sqrt((config.x - config.goalX)**2 + (config.y - config.goalY)**2) \
-        <= config.goal_radius:
-        return 1
-    return 0
 
 
 human_angle=0
@@ -597,7 +592,7 @@ def main():
     # rand=RandomNumberGenerator()
     config = Config()
     # position of obstacles
-    obs = Obstacles()
+    # obs = Obstacles()
     readob = GazeboObsReader(config)
     counter = StringMessageCounter()
     # if chizu=="4":
@@ -614,11 +609,11 @@ def main():
 
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
-    subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
+    # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
     sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,share1,queue_size=1)
 
     pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
-
+    processor = Mid360Processor(config.robot_radius)
     # sub_obs = rospy.Subscriber("/gazebo/base_collision",Contact,StringMessageCounter.callbackobs,queue_size=10)
     pub_line = rospy.Publisher('~line_list', Marker, queue_size=10)
     pub_line_human = rospy.Publisher('~line_list_human', Marker, queue_size=10)
@@ -644,7 +639,7 @@ def main():
     while not rospy.is_shutdown():
         current_time = rospy.get_time() - start_time
         if (inputkey== 1):
-            u = dwa_control(x, u, config, obs.obst,readob,step=current_time,log_writer=log_writer)
+            u = dwa_control(x, u, config,processor.xy_set,readob,step=current_time,log_writer=log_writer)
             x[0] = config.x
             x[1] = config.y
             x[2] = config.th
@@ -665,7 +660,7 @@ def main():
         #     marker_pub.publish(markers)
         pub.publish(speed)
 
-        if write==1:
+        if atGoal(config)==1 or write==1:
             if yici>0:
                 print("YOU have arrive the goal point")
                 stop_rosbag()
@@ -674,6 +669,7 @@ def main():
 
                 # change_goal(config,rand.get_next())
                 # goal_sphere(config)
+                play_celebration_sound()
                 yici=0
             
         config.r.sleep()

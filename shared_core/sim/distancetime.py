@@ -261,33 +261,51 @@ def read_last_value_from_column():
         return 1
     return valid_values+1
 
+import re
+
 def start_rosbag():
     """
-    启动 rosbag 记录。
-    :param record_topics: 要记录的 ROS 话题列表，字符串或列表形式
-    :param output_file: rosbag 保存的文件路径，不需要后缀名
+    自动寻找下一个 rosbag 编号：
+    rosbag1.bag
+    rosbag2.bag
+    rosbag3.bag
+    ...
     """
-    count=1
-    record_topics = ["/cmd_vel", "/cmd_vel_human", "/odom","/dynamic_obstacle_states"]  # 话题
 
-    rosbag_dir = os.path.expanduser("~/rosbagpaper")  # Expands to /home/user/rosbag
-    os.makedirs(rosbag_dir, exist_ok=True)  # Ensure directory exists
+    record_topics = [
+        "/cmd_vel",
+        "/cmd_vel_human",
+        "/odom",
+        "/dynamic_obstacle_states"
+    ]
 
-    # Output file path
+    rosbag_dir = os.path.expanduser("~/rosbag")
+    os.makedirs(rosbag_dir, exist_ok=True)
+
+    # 查找已有 rosbag 文件
+    pattern = re.compile(r"^rosbag(\d+)\.bag$")
+
+    max_num = 0
+    for filename in os.listdir(rosbag_dir):
+        match = pattern.match(filename)
+        if match:
+            max_num = max(max_num, int(match.group(1)))
+
+    count = max_num + 1
+
     output_file = os.path.join(rosbag_dir, f"rosbag{count}")
 
     global rosbag_process
-    # 构建 rosbag record 命令
-    cmd = ["rosbag", "record", "-O", output_file]
-    if isinstance(record_topics, list):
-        cmd.extend(record_topics)
-    elif isinstance(record_topics, str):
-        cmd.append(record_topics)
 
-    # 启动 rosbag 记录
+    cmd = ["rosbag", "record", "-O", output_file]
+    cmd.extend(record_topics)
+
     print(f"Starting rosbag recording: {' '.join(cmd)}")
+
     rosbag_process = subprocess.Popen(cmd)
-    print("rosbag recording started.")
+
+    print(f"rosbag recording started -> rosbag{count}.bag")
+
     return count
 
 def stop_rosbag():
@@ -303,3 +321,11 @@ def stop_rosbag():
         print("rosbag recording stopped.")
     else:
         print("No rosbag recording process found.")
+
+def atGoal(config):
+    # check at goal
+    # if math.sqrt((config.x - config.goalX)**2 + (config.y - config.goalY)**2) \
+    #     <= config.goal_radius:
+    if config.x>= config.goalX:
+        return 1
+    return 0
