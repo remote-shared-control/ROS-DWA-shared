@@ -15,7 +15,7 @@ class GazeboObsReader:
         self.config = config
 
         # 只读取 human 模型
-        self.target_prefix = "human"
+        self.target_prefix = "obstacle"
 
         self.obs_info = np.zeros((0, 6))  # x, y, vx, vy, radius, id
         self.moving_future = None        # 保存 num_obs × num_steps × 2

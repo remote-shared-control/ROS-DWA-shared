@@ -41,7 +41,7 @@ from lidar3d import *
 import csv
 
 
-RECORDER = False
+RECORDER = True  # Set to True to enable CSV logging, False to disable
 
 if RECORDER:
     log_dir = "/home/frienkie/rosbagpaper"
@@ -69,20 +69,20 @@ class Config():
         # robot parameter
         #NOTE good params:
         #NOTE 0.55,0.1,1.0,1.6,3.2,0.15,0.05,0.1,1.7,2.4,0.1,3.2,0.18
-        self.max_speed = 0.2  # [m/s]
-        self.min_speed = 0.0  # [m/s]
+        self.max_speed = 1.0  # [m/s]
+        self.min_speed = -1.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
-        self.max_yawrate = 1.2  # [rad/s]
-        self.max_accel = 2.5  # [m/ss]
-        self.max_dyawrate = 3.2  # [rad/ss]
+        self.max_yawrate = 1.0  # [rad/s]
+        self.max_accel = 0.8  # [m/ss]
+        self.max_dyawrate = 1.0  # [rad/ss]
         ##################################################33
-        self.v_reso = 0.05  # [m/s]
+        self.v_reso = 0.2  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
         self.yawrate_reso = 0.05  # [rad/s]
         #######################################################
         self.dt = 0.4  # [s]
         self.dtsys = 0.05
-        self.predict_time = 14.8  # [s]
+        self.predict_time = 5.0  # [s]
         self.showpredict_time = 3.0  # [s]
         self.showdt = 1.0
         self.goal_radius=0.4
@@ -96,19 +96,19 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 1.0 #lower = faster
-        self.obs_cost_gain = 2.0 #lower z= fearless
+        self.speed_cost_gain = 2.0 #lower = faster
+        self.obs_cost_gain = 1.0 #lower z= fearless
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.23  # [m]
-        self.obs_radius =0.1
+        self.robot_radius = 0.21  # [m]
+        self.obs_radius =0.15
         self.x = 0.0
         self.y = 0.0
         self.th = 0.0
-        self.goalX = 0.0
+        self.goalX = 9.0
         self.goalY = 0.0
         self.prev_x = 0.0
         self.prev_y = 0.0
@@ -119,6 +119,8 @@ class Config():
         self.prev_x0= 0.0
         self.prev_y0= 0.0
         self.distance0=0.0
+        self.v=0.0
+        self.w=0.0
         # self.xy = set()
         self.r = rospy.Rate(20)
 
@@ -132,6 +134,8 @@ class Config():
         (roll,pitch,theta) = \
             euler_from_quaternion ([rot_q.x,rot_q.y,rot_q.z,rot_q.w])
         self.th = theta
+        self.v = msg.twist.twist.linear.x
+        self.w = msg.twist.twist.angular.z
         # self.xy.add((self.x,self.y))
 
 
@@ -219,33 +223,85 @@ def motion(x, u, dt):
 # Determine the dynamic window from robot configurations
 def calc_dynamic_window(x, config):
 
-    # Dynamic window from robot specification
-    Vs = [config.min_speed, config.max_speed,
-          -config.max_yawrate, config.max_yawrate]
+    # -----------------------------
+    # Dynamic window limits
+    # -----------------------------
+    v_min = max(
+        config.min_speed,
+        x[3] - config.max_accel * config.dt
+    )
 
-    # Dynamic window from motion model
-    Vd = [x[3] - config.max_accel * config.dt,
-          x[3] + config.max_accel * config.dt,
-          x[4] - config.max_dyawrate * config.dt,
-          x[4] + config.max_dyawrate * config.dt]
+    v_max = min(
+        config.max_speed,
+        x[3] + config.max_accel * config.dt
+    )
 
-    #  [vmin, vmax, yawrate min, yawrate max]
-    dw = [max(Vs[0], Vd[0]), min(Vs[1], Vd[1]),
-          max(Vs[2], Vd[2]), min(Vs[3], Vd[3])]
+    w_min = max(
+        -config.max_yawrate,
+        x[4] - config.max_dyawrate * config.dt
+    )
 
-    vs = list(np.arange(dw[0], dw[1] + config.v_reso, config.v_reso))
-    ws = list(np.arange(dw[2], dw[3] + config.yawrate_reso, config.yawrate_reso))
+    w_max = min(
+        config.max_yawrate,
+        x[4] + config.max_dyawrate * config.dt
+    )
 
-    if dw[0] <= 0.0 <= dw[1]:
-        vs.append(0.0)
-    if dw[2] <= 0.0 <= dw[3]:
-        ws.append(0.0)
+    # -----------------------------
+    # Sampling number
+    # -----------------------------
+    num_v = max(
+        2,
+        int((v_max - v_min) / config.v_reso) + 1
+    )
 
-    vs = sorted(set(round(v, 2) for v in vs
-                    if dw[0] - 1e-6 <= v <= dw[1] + 1e-6))
-    ws = sorted(set(round(w, 2) for w in ws
-                    if dw[2] - 1e-6 <= w <= dw[3] + 1e-6))
-    return vs,ws
+    num_w = max(
+        2,
+        int((w_max - w_min) / config.yawrate_reso) + 1
+    )
+
+    # -----------------------------
+    # Velocity sampling
+    # -----------------------------
+    vs = np.linspace(v_min, v_max, num_v)
+    ws = np.linspace(w_min, w_max, num_w)
+
+    # -----------------------------
+    # Ensure exact zero exists
+    # -----------------------------
+    EPS = 1e-6
+
+    # linear velocity
+    if v_min <= 0.0 <= v_max:
+        if not np.any(np.abs(vs) < EPS):
+            vs = np.concatenate((vs, [0.0]))
+
+    # angular velocity
+    if w_min <= 0.0 <= w_max:
+        if not np.any(np.abs(ws) < EPS):
+            ws = np.concatenate((ws, [0.0]))
+
+    # -----------------------------
+    # Angular velocity filtering
+    # -----------------------------
+    MIN_W = 0.05
+
+    # floating-point correction
+    ws[np.abs(ws) < EPS] = 0.0
+
+    # keep:
+    #   1. effective yawrate
+    #   2. exact zero
+    mask = (np.abs(ws) > MIN_W) | (ws == 0.0)
+
+    ws = ws[mask]
+
+    # -----------------------------
+    # Sort after concatenate
+    # -----------------------------
+    vs.sort()
+    ws.sort()
+
+    return vs, ws
 
 list_x=[]
 list_y=[]
@@ -376,23 +432,20 @@ def calc_obstacle_cost(traj, ob, config,readob):
         num_obs = 0
     else:
         num_obs = moving_future.shape[0]
-
+    oxs, oys = ob
     # Loop through every obstacle in set and calc Pythagorean distance
     # Use robot radius to determine if collision
-    for ii in range(1, len(traj[:, 1]), skip_n):
-        for i in ob.copy():
-            ox = i[0]           ##障害物
-            oy = i[1]
-            dx = traj[ii, 0] - ox    ##轨迹
-            dy = traj[ii, 1] - oy
+    if oxs.size > 0:
+        for ii in range(1, len(traj[:, 1]), skip_n):
+            dx = traj[ii, 0] - oxs
+            dy = traj[ii, 1] - oys
 
-            r = math.sqrt(dx**2 + dy**2)  ##距离
+            r = np.hypot(dx, dy)
 
-            if r <= config.robot_radius:
-                return float("-Inf")  # collision
+            if np.any(r <= config.robot_radius):
+                return float("-Inf")
 
-            if minr >= r:
-                minr = r
+            minr = min(minr, np.min(r))
 
     for obs_i in range(num_obs):
         mob_traj = moving_future[obs_i]    # shape = (num_steps, 2)
@@ -459,7 +512,6 @@ def share1(vel_msg):# human command get 获取人类指令
     if human.linear.x<=0.001 and human.linear.x>=-0.001:
         human.linear.x = 0.0
     # human_angle=cal_angle(human.linear.x,human.angular.z)
-    human_r=math.atan2(human.angular.z,human.linear.x)
 
 
 
@@ -518,39 +570,37 @@ h_marker.pose.position.y = 0.0
 h_marker.pose.position.z = 0.0
 
 def line(num):
-    # marker line points
     marker.points = []
 
     for i in range(num):
-        exec(f"line_point{i} = Point()") 
-        exec(f"line_point{i}.x = list_x[{i}]")
-        exec(f"line_point{i}.y = list_y[{i}]")
-        exec(f"line_point{i}.z = 0.0")
-        exec(f"marker.points.append(line_point{i})")
+        p = Point()
+        p.x = list_x[i]
+        p.y = list_y[i]
+        p.z = 0.0
+        marker.points.append(p)
 
 def h_line(num):
-    # marker line points
     h_marker.points = []
 
     for i in range(num):
-        exec(f"line_point{i} = Point()") 
-        exec(f"line_point{i}.x = list_x_human[{i}]")
-        exec(f"line_point{i}.y = list_y_human[{i}]")
-        exec(f"line_point{i}.z = 0.0")
-        exec(f"h_marker.points.append(line_point{i})")
+        p = Point()
+        p.x = list_x_human[i]
+        p.y = list_y_human[i]
+        p.z = 0.0
+        h_marker.points.append(p)
 
-
-human=Twist()
-human.linear.x=0.0
-human.angular.z=0.0
-human_r=float("inf")
-inputkey=0
 write=0
+human=Twist()
+
 
 def signal_handler(signal, frame):
     print("\nCtrl + C  is pressed,exit sys")
-    if RECORDER==True:
-        log_file.close()
+    if yici>0:
+        global file_value
+        delete_rosbag(file_value)
+        print("You have not arrive the goal point,rosbag deleted")
+    if log_file is not None:
+            log_file.close()
     sys.exit(0)  # 退出程序
 
 # 绑定 SIGINT 信号（Ctrl + C）到 signal_handler
@@ -575,7 +625,9 @@ def listen_key():
 
 def main():
     global yici
+    global file_value
     global write
+    file_value=None
     print(__file__ + " start!!")
     print("human is 0,share is 1")
     inputkey=1
@@ -594,19 +646,19 @@ def main():
     # position of obstacles
     # obs = Obstacles()
     readob = GazeboObsReader(config)
-    counter = StringMessageCounter()
+    
     # if chizu=="4":
     #     config.robot_radius=0.106
     #     obs.pattern=1
     #     print("changed OK")
-    model_name = "turtlebot3_waffle_pi"
+    model_name = "limo"
     # 指定目标位置和方向 (四元数)
-    target_position = [0.0, 0.0, 0.0]  # x, y, z
+    target_position = [0.0, 0.0, 0.148]  # x, y, z
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
 
     threading.Thread(target=listen_key, daemon=True).start()
-
+    counter = StringMessageCounter()
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
@@ -643,10 +695,10 @@ def main():
             x[0] = config.x
             x[1] = config.y
             x[2] = config.th
-            x[3] = u[0]
-            x[4] = u[1]
-            speed.linear.x = x[3]
-            speed.angular.z = x[4]
+            x[3] = config.v
+            x[4] = config.w
+            speed.linear.x = u[0]
+            speed.angular.z = u[1]
             line(line_num)
             pub_line.publish(marker)
             h_line(line_num_human)
@@ -670,8 +722,14 @@ def main():
                 # change_goal(config,rand.get_next())
                 # goal_sphere(config)
                 play_celebration_sound()
+                save_result(file_value,round(counter.count_time-start_time,2),2)
                 yici=0
-            
+        if counter.send_count>= 1:
+            if yici>0:
+                print("You have been hit by the obstacle,please reset the robot.write file")
+                stop_rosbag()
+                save_result(file_value,round(counter.count_time-start_time,2),2)
+                yici=0
         config.r.sleep()
 
 

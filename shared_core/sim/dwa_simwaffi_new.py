@@ -42,8 +42,8 @@ from lidar3d import *
 import csv
 
 RECORDER = True  # Set to True to enable CSV logging, False to disable
-
-if RECORDER:
+RECORDER_CSV = False  # Set to True to enable CSV logging, False to disable
+if RECORDER_CSV:
     log_dir = "/home/frienkie/rosbagpaper"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "new_cost_log.csv")
@@ -71,20 +71,20 @@ class Config():
         self.max_speed = 1.0  # [m/s]
         self.min_speed = -1.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
-        self.max_yawrate = 1.4  # [rad/s]
+        self.max_yawrate = 1.0 # [rad/s]
         self.max_accel = 0.8  # [m/ss]
-        self.max_dyawrate = 3.2  # [rad/ss]
+        self.max_dyawrate = 1.0  # [rad/ss]
         ##################################################33
         self.v_reso = 0.2  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
         self.yawrate_reso = 0.05  # [rad/s]
         #######################################################
-        self.dt = 0.2  # [s]
+        self.dt = 0.4  # [s]
         self.dtsys = 0.1  # [s]
-        self.predict_time_static = 1.2  # [s]
-        self.predict_time = 7.0  # [s]
-        self.showpredict_time = 4.0  # [s]
-        self.movetimemin = 4.0
+        self.predict_time_static = 2.4  # [s]
+        self.predict_time = 5.0  # [s]
+        self.showpredict_time = 3.0  # [s]
+        self.movetimemin = 5.0
         self.showdt = 1.0
         self.goal_radius=0.4
         #########################################
@@ -97,9 +97,9 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 1.0 #lower = faster
+        self.speed_cost_gain = 2.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
-        self.move_obs_gain = 2.0
+        self.move_obs_gain = 1.0
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
         #     self.speed_cost_gain = 1.0 #lower = faster
@@ -107,7 +107,7 @@ class Config():
         # #############################
         self.robot_radius = 0.21  # [m]
 
-        self.cube_half_size=0.15
+        self.cube_half_size=0.16
 
         
         self.x = 0.0
@@ -127,6 +127,8 @@ class Config():
         self.human=Twist()
         self.human.linear.x=0.0
         self.human.angular.z=0.0
+        self.v=0.0
+        self.w=0.0
         # self.xy = set()
         self.r = rospy.Rate(20)
 
@@ -142,11 +144,11 @@ class Config():
             euler_from_quaternion ([rot_q.x,rot_q.y,rot_q.z,rot_q.w])
         # 保留三位小数精度
         self.th = round(theta, 3)
+        self.v = msg.twist.twist.linear.x
+        self.w = msg.twist.twist.angular.z
         # self.xy.add((self.x,self.y))
 
     def share1(self,vel_msg):# human command get 获取人类指令
-        # global human_r
-        global inputkey
 
         self.human.linear.x=vel_msg.linear.x
         self.human.angular.z=vel_msg.angular.z
@@ -426,7 +428,7 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
 
             traj = calc_trajectory(xinit, v, w, config)
 
-            to_human_cost = (1-calc_to_human_cost(v,w,config,4)) * config.to_human_cost_gain
+            to_human_cost = (1-calc_to_human_cost(w,config)) * config.to_human_cost_gain
 
             speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
 
@@ -435,10 +437,15 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
             if np.isinf(ob_cost):
                 continue
             ob_movecost=cal_time(cube,config.x, config.y, config.th, v, w, config.predict_time)
-            ob_movecost=config.move_obs_gain*(ob_movecost-config.movetimemin)/(config.predict_time-config.movetimemin)
+            if config.predict_time<=config.movetimemin:
+                if ob_movecost<config.movetimemin:
+                    continue
+                ob_movecost=0
+            else:
+                ob_movecost=config.move_obs_gain*(ob_movecost-config.movetimemin)/(config.predict_time-config.movetimemin)
             
-            if ob_movecost<=0:
-                continue
+                if ob_movecost<=0:
+                    continue
 
             final_cost = to_human_cost + speed_cost + ob_movecost+ob_cost
 
@@ -486,10 +493,9 @@ def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], conf
     return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 
 ############################################################################
-def calc_to_human_cost( v, w,config,n):
+def calc_to_human_cost( w,config):
 
-    if n==4:# w minus directly
-        cost = abs(config.human.angular.z-w)/(config.max_yawrate*2)
+    cost = abs(config.human.angular.z-w)/(config.max_yawrate*2)
 
     return cost
 ##################################################################################
@@ -562,26 +568,24 @@ h_marker.pose.position.y = 0.0
 h_marker.pose.position.z = 0.0
 
 def line(num):
-    # marker line points
     marker.points = []
 
     for i in range(num):
-        exec(f"line_point{i} = Point()") 
-        exec(f"line_point{i}.x = list_x[{i}]")
-        exec(f"line_point{i}.y = list_y[{i}]")
-        exec(f"line_point{i}.z = 0.0")
-        exec(f"marker.points.append(line_point{i})")
+        p = Point()
+        p.x = list_x[i]
+        p.y = list_y[i]
+        p.z = 0.0
+        marker.points.append(p)
 
 def h_line(num):
-    # marker line points
     h_marker.points = []
 
     for i in range(num):
-        exec(f"line_point{i} = Point()") 
-        exec(f"line_point{i}.x = list_x_human[{i}]")
-        exec(f"line_point{i}.y = list_y_human[{i}]")
-        exec(f"line_point{i}.z = 0.0")
-        exec(f"h_marker.points.append(line_point{i})")
+        p = Point()
+        p.x = list_x_human[i]
+        p.y = list_y_human[i]
+        p.z = 0.0
+        h_marker.points.append(p)
 
 def remove_near_points(xy_set, pose_data, threshold=0.4):
 
@@ -627,13 +631,17 @@ def remove_near_points(xy_set, pose_data, threshold=0.4):
 
 inputkey=0
 write=0
+file_value=0
 
 def signal_handler(signal, frame):
     print("\nCtrl + C  is pressed,exit sys")
-    if RECORDER==True:
-        log_file.close()
+    if yici>0:
+        global file_value
+        delete_rosbag(file_value)
+        print("You have not arrive the goal point,rosbag deleted")
+    if log_file is not None:
+            log_file.close()
     sys.exit(0)  # 退出程序
-
 # 绑定 SIGINT 信号（Ctrl + C）到 signal_handler
 signal.signal(signal.SIGINT, signal_handler)
 
@@ -656,7 +664,7 @@ def listen_key():
 
 def main():
     global yici
-    global write
+    global write,file_value
     print(__file__ + " start!!")
     print("human is 0,share is 1,have been 1 yet")
     inputkey=1
@@ -685,7 +693,7 @@ def main():
     # model_name = "turtlebot3_waffle_pi_addvio"
     model_name = "limo"
     # 指定目标位置和方向 (四元数)
-    target_position = [0.0, 0.0, 0.16]  # x, y, z
+    target_position = [0.0, 0.0, 0.148]  # x, y, z
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
 
@@ -710,11 +718,10 @@ def main():
     x = np.array([config.x, config.y, config.th, 0.0, 0.0])
     # initial linear and angular velocities
     u = np.array([0.0, 0.0])
-    
-    start_time = rospy.get_time()
     print("You can press y to stop and save rosbag when you need.")
     if RECORDER==True:
         file_value=start_rosbag()
+    start_time = rospy.get_time()
     # runs until terminated externally
     while not rospy.is_shutdown():
         current_time = rospy.get_time() - start_time
@@ -725,10 +732,10 @@ def main():
             x[0] = config.x
             x[1] = config.y
             x[2] = config.th
-            x[3] = u[0]
-            x[4] = u[1]
-            speed.linear.x = x[3]
-            speed.angular.z = x[4]
+            x[3] = config.v
+            x[4] = config.w
+            speed.linear.x = u[0]
+            speed.angular.z = u[1]
             line(line_num)
             pub_line.publish(marker)
             h_line(line_num_human)
@@ -742,16 +749,25 @@ def main():
         #     marker_pub.publish(markers)
         pub.publish(speed)
 
-        if atGoal(config)==1 or write==1:
+        if atGoal(config)==1 or write==1 :
             if yici>0:
-                print("YOU have arrive the goal point")
-                stop_rosbag()
+                print("YOU have arrive the goal point. write file.")
                 # with open(f'/home/frienkie/cood/testnew.txt', 'w') as f:
                 #     json.dump(list(config.xy), f)
 
                 # change_goal(config,rand.get_next())
                 # goal_sphere(config)
                 play_celebration_sound()
+                if RECORDER==True:
+                    stop_rosbag()
+                    save_result(file_value,round(counter.count_time-start_time,2),3)
+                yici=0
+        if counter.send_count>= 1:
+            if yici>0:
+                print("You have been hit by the obstacle,please reset the robot.write file")
+                if RECORDER==True:
+                    stop_rosbag()
+                    save_result(file_value,round(counter.count_time-start_time,2),3)
                 yici=0
             
         config.r.sleep()

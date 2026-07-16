@@ -14,7 +14,7 @@ from gazebo_msgs.srv import SetModelState
 from gazebo_msgs.msg import ModelState
 from sensor_msgs.msg import JoyFeedbackArray,JoyFeedback
 import subprocess
-import time
+import time,csv
 from geometry_msgs.msg import Twist, Point
 
 
@@ -147,49 +147,163 @@ def save(time,distance,count_time,n,m,chizu):# n is direct switch,m is para
     workbook.save(file_name)
 
 class StringMessageCounter:
+
     def __init__(self):
-        # 设置监听的时间间隔
-        self.inactive_threshold = 2.0  # 秒
-        self.last_message_time = None
+
+        # -----------------------------
+        # 参数
+        # -----------------------------
+        self.release_time = 0.3          # 多久没有Contact认为离开障碍物
+        self.vibration_time = 1.0        # 震动持续时间
+
+        # -----------------------------
+        # 原来的统计变量（保留）
+        # -----------------------------
         self.send_count = 0
         self.count_time = 0
-        self.first_time=True
-        self.vibra=JoyFeedback()
-        self.vibra.type=1
-        self.vibra.id=1
-        self.vibra.intensity=1.0
-        self.novibra=JoyFeedback()
-        self.novibra.type=1
-        self.novibra.id=1
-        self.novibra.intensity=0.0
-        self.jyotai=0
-        rospy.Subscriber("/gazebo/base_collision",Contact,self.callbackobs,queue_size=10)
-        self.vibration = rospy.Publisher('joy/set_feedback',JoyFeedbackArray,queue_size=1)
+        self.first_time = True
 
-    def callbackobs(self,msg):
-        current_time = rospy.get_time()
-        # 判断是否是新的一次发送
-        if self.last_message_time is None or \
-           (current_time - self.last_message_time) > self.inactive_threshold:
-            if self.first_time:
-                self.count_time=current_time
-                self.first_time=False
-            self.send_count += 1
-            print(f"New message batch detected. TIME IS {current_time}.Total count: {self.send_count}")
-            self.jyotai=1
-        # 更新最后消息接收时间
-        self.last_message_time = current_time
+        # -----------------------------
+        # Edge Trigger状态
+        # -----------------------------
+        self.in_collision = False
+        self.last_contact_time = 0.0
 
-        if self.jyotai==1:
-            self.feedback=JoyFeedbackArray(array=[self.vibra])
-            self.vibration.publish(self.feedback)
-            time.sleep(1.5)
-            self.jyotai=0
-            self.feedback=JoyFeedbackArray(array=[self.novibra])
-            self.vibration.publish(self.feedback)
-        else:
-            self.feedback=JoyFeedbackArray(array=[self.novibra])
-            self.vibration.publish(self.feedback)
+        # -----------------------------
+        # JoyFeedback
+        # -----------------------------
+        self.vibra = JoyFeedback()
+        self.vibra.type = 1
+        self.vibra.id = 1
+        self.vibra.intensity = 1.0
+
+        self.novibra = JoyFeedback()
+        self.novibra.type = 1
+        self.novibra.id = 1
+        self.novibra.intensity = 0.0
+
+        self.vibration = rospy.Publisher(
+            "joy/set_feedback",
+            JoyFeedbackArray,
+            queue_size=1
+        )
+
+        rospy.Subscriber(
+            "/gazebo/base_collision",
+            Contact,
+            self.callbackobs,
+            queue_size=1
+        )
+
+        # 定时检测是否离开障碍物
+        self.monitor_timer = rospy.Timer(
+            rospy.Duration(0.05),
+            self.monitor_collision
+        )
+
+        # 当前震动Timer
+        self.vibration_timer = None
+
+        # 程序退出时关闭震动
+        rospy.on_shutdown(self.shutdown)
+
+        rospy.loginfo("Collision node started.")
+
+    # ---------------------------------------------------------
+    # 收到Contact
+    # ---------------------------------------------------------
+    def callbackobs(self, msg):
+
+        now = rospy.get_time()
+
+        # 更新最近一次Contact时间
+        self.last_contact_time = now
+
+        # 已经处于碰撞状态，不重复计数
+        if self.in_collision:
+            return
+
+        # ---------- 新碰撞 ----------
+        self.in_collision = True
+
+        if self.first_time:
+            self.count_time = now
+            self.first_time = False
+
+        self.send_count += 1
+
+        rospy.loginfo(
+            "Collision #%d  Time=%.3f",
+            self.send_count,
+            now
+        )
+
+        # 开始震动
+        self.vibration.publish(
+            JoyFeedbackArray(array=[self.vibra])
+        )
+
+        # 若之前还有Timer，取消
+        if self.vibration_timer is not None:
+            self.vibration_timer.shutdown()
+
+        # 新建停止震动Timer
+        self.vibration_timer = rospy.Timer(
+            rospy.Duration(self.vibration_time),
+            self.stop_vibration,
+            oneshot=True
+        )
+
+    # ---------------------------------------------------------
+    # 停止震动
+    # ---------------------------------------------------------
+    def stop_vibration(self, event):
+
+        self.vibration.publish(
+            JoyFeedbackArray(array=[self.novibra])
+        )
+
+        self.vibration_timer = None
+
+    # ---------------------------------------------------------
+    # 检测是否已经离开障碍物
+    # ---------------------------------------------------------
+    def monitor_collision(self, event):
+
+        if not self.in_collision:
+            return
+
+        now = rospy.get_time()
+
+        # 超过release_time没有收到Contact
+        if now - self.last_contact_time > self.release_time:
+
+            self.in_collision = False
+
+            rospy.loginfo("Collision released.")
+
+    # ---------------------------------------------------------
+    # 程序退出
+    # ---------------------------------------------------------
+    def shutdown(self):
+
+        rospy.loginfo("Stopping vibration...")
+
+        # 关闭震动Timer
+        if self.vibration_timer is not None:
+            self.vibration_timer.shutdown()
+            self.vibration_timer = None
+
+        # 连续发送几次停止震动，防止最后一帧丢失
+        msg = JoyFeedbackArray(array=[self.novibra])
+
+        rate = rospy.Rate(50)
+
+        for _ in range(10):
+            self.vibration.publish(msg)
+            rate.sleep()
+
+        rospy.loginfo("Vibration stopped.")
         
 
 def set_robot_position(model_name, position, orientation):
@@ -232,8 +346,8 @@ def set_robot_position(model_name, position, orientation):
         rospy.logerr(f"Service call failed: {e}")
     cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
     stop_cmd = Twist()
-    rate = rospy.Rate(10)
-    for _ in range(10):  # 连续发送一段时间，确保停止
+    rate = rospy.Rate(20)
+    for _ in range(20):  # 连续发送一段时间，确保停止
         cmd_vel_pub.publish(stop_cmd)
         rate.sleep()
 
@@ -261,15 +375,38 @@ def read_last_value_from_column():
         return 1
     return valid_values+1
 
-import re
+def get_next_rosbag_number(excel_path="/home/frienkie/result/data.xlsx"):
+    """
+    读取Excel A列最后一个编号，并返回+1
+    若文件不存在或A列没有数据，则返回1
+    """
 
+    if not os.path.exists(excel_path):
+        return 1
+
+    wb = load_workbook(excel_path, data_only=True)
+    ws = wb.active
+
+    last_num = 0
+
+    # 从第二行开始（第一行为表头）
+    for row in range(2, ws.max_row + 1):
+        value = ws.cell(row=row, column=1).value
+        if value is None:
+            continue
+
+        try:
+            last_num = int(value)
+        except:
+            continue
+
+    return last_num + 1
+
+import rosnode
 def start_rosbag():
     """
-    自动寻找下一个 rosbag 编号：
-    rosbag1.bag
-    rosbag2.bag
-    rosbag3.bag
-    ...
+    根据Excel A列编号自动生成新的rosbag编号，
+    并等待rosbag节点真正启动后再返回。
     """
 
     record_topics = [
@@ -282,16 +419,8 @@ def start_rosbag():
     rosbag_dir = os.path.expanduser("~/rosbag")
     os.makedirs(rosbag_dir, exist_ok=True)
 
-    # 查找已有 rosbag 文件
-    pattern = re.compile(r"^rosbag(\d+)\.bag$")
-
-    max_num = 0
-    for filename in os.listdir(rosbag_dir):
-        match = pattern.match(filename)
-        if match:
-            max_num = max(max_num, int(match.group(1)))
-
-    count = max_num + 1
+    # 从Excel读取编号
+    count = get_next_rosbag_number()
 
     output_file = os.path.join(rosbag_dir, f"rosbag{count}")
 
@@ -304,6 +433,35 @@ def start_rosbag():
 
     rosbag_process = subprocess.Popen(cmd)
 
+    # -------------------------------
+    # 等待rosbag节点启动
+    # -------------------------------
+    timeout = 5.0      # 最长等待5秒
+    interval = 0.05    # 每50ms检测一次
+
+    start = time.time()
+
+    while True:
+        try:
+            nodes = rosnode.get_node_names()
+
+            # rosbag record节点一般以 /record 开头
+            record_nodes = [n for n in nodes if n.startswith("/record")]
+
+            if record_nodes:
+                print(f"Detected rosbag node: {record_nodes[0]}")
+                break
+
+        except Exception:
+            # rosnode查询失败，继续等待
+            pass
+
+        if time.time() - start > timeout:
+            print("Warning: Wait for rosbag node timeout!")
+            break
+
+        time.sleep(interval)
+    time.sleep(0.8)  # 再等待0.5秒，确保rosbag节点稳定
     print(f"rosbag recording started -> rosbag{count}.bag")
 
     return count
@@ -329,3 +487,64 @@ def atGoal(config):
     if config.x>= config.goalX:
         return 1
     return 0
+
+def save_result(a, b, c, file_path="/home/frienkie/result/data.xlsx"):
+    """
+    将a、b写入A、B列，将c写入同一行F列
+    如果文件不存在，则创建并写入表头
+    """
+    if b<0:
+        b=0
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    if not os.path.exists(file_path):
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["A", "B", "C", "D", "E", "F"])
+    else:
+        wb = load_workbook(file_path)
+        ws = wb.active
+
+    # 新增一行（A、B列）
+    ws.append([a, b])
+
+    # 当前新增的行号
+    row = ws.max_row
+
+    # F列写入c
+    ws.cell(row=row, column=6).value = c
+
+    wb.save(file_path)
+
+import os
+
+def delete_rosbag(count):
+    """
+    删除对应编号的 rosbag 文件，例如：
+    count = 3
+    删除：
+        ~/rosbag/rosbag3.bag
+        ~/rosbag/rosbag3.bag.active（如果存在）
+    """
+
+    rosbag_dir = os.path.expanduser("~/rosbag")
+
+    bag_file = os.path.join(rosbag_dir, f"rosbag{count}.bag")
+    active_file = bag_file + ".active"
+
+    deleted = False
+
+    if os.path.exists(active_file):
+        os.remove(active_file)
+        print(f"Deleted: {active_file}")
+        deleted = True
+
+    if os.path.exists(bag_file):
+        os.remove(bag_file)
+        print(f"Deleted: {bag_file}")
+        deleted = True
+
+    if not deleted:
+        print(f"rosbag{count}.bag does not exist.")
+
+        
