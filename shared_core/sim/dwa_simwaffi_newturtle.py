@@ -60,6 +60,19 @@ else:
     print("❌ CSV logging disabled")
 
 
+class RuntimeState:
+    """Keep the simulation's shared runtime state in one place."""
+
+    def __init__(self):
+        self.control_mode = 0  # 0: human control, 1: shared control
+        self.save_requested = False
+        self.rosbag_id = 0
+        self.result_pending = True  # Handle the result only once.
+
+
+runtime_state = RuntimeState()
+
+
 class Config():
     # simulation parameters
 
@@ -144,7 +157,6 @@ class Config():
 
     def share1(self,vel_msg):# human command get 获取人类指令
         # global human_r
-        global inputkey
 
         self.human.linear.x=vel_msg.linear.x
         self.human.angular.z=vel_msg.angular.z
@@ -227,7 +239,6 @@ class Config():
 #         #     self.obs_last=self.obst.copy()
 
 
-
         
 # Model to determine the expected position of the robot after moving along trajectory
 def motion(x, u, dt):
@@ -270,43 +281,32 @@ def calc_dynamic_window(x, config):
                     if dw[2] - 1e-6 <= w <= dw[3] + 1e-6))
     return vs,ws
 
-list_x=[]
-list_y=[]
-line_num=0
-list_x_human=[]
-list_y_human=[]
-line_num_human=0
+class TrajectoryPreview:
+    """Store and update the coordinates of a predicted display trajectory."""
+
+    def __init__(self):
+        self.x_points = []
+        self.y_points = []
+
+    @property
+    def point_count(self):
+        return len(self.x_points)
+
+    def update(self, xinit, v, y, config):
+        x = np.array(xinit)
+        time = 0
+        self.x_points.clear()
+        self.y_points.clear()
+
+        while time <= config.showpredict_time:
+            x = motion(x, [v, y], config.dt)
+            self.x_points.append(x[0])
+            self.y_points.append(x[1])
+            time += config.dt
 
 
-def show_trajectory(xinit, v, y, config):
-    global line_num
-    x = np.array(xinit)
-    time = 0
-    list_x.clear()
-    list_y.clear()
-
-    while time <= config.showpredict_time:
-        # store each motion model along a trajectory
-        x = motion(x, [v, y], config.dt)
-        list_x.append(x[0])
-        list_y.append(x[1])
-        time += config.dt # next sample
-    line_num=len(list_x)
-
-def show_trajectory_human(xinit, v, y, config):
-    global line_num_human
-    x = np.array(xinit)
-    time = 0
-    list_x_human.clear()
-    list_y_human.clear()
-
-    while time <= config.showpredict_time:
-        # store each motion model along a trajectory
-        x = motion(x, [v, y], config.dt)
-        list_x_human.append(x[0])
-        list_y_human.append(x[1])
-        time += config.dt # next sample
-    line_num_human=len(list_x_human)
+robot_trajectory = TrajectoryPreview()
+human_trajectory = TrajectoryPreview()
 
 angle_robot=0.0
 # Calculate a trajectory sampled across a prediction time
@@ -325,7 +325,6 @@ def calc_trajectory(xinit, v, y, config):
 
 
 ################################################################################
-
 
 
 # Calculate trajectory, costings, and return velocities to apply to robot
@@ -375,8 +374,8 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
                 max_u = [v, w]
     # if max_u[0]==0.0:
     #     max_u[1]=human.angular.z
-    show_trajectory(xinit, max_u[0], max_u[1], config)
-    show_trajectory_human(xinit, config.human.linear.x, config.human.angular.z, config)
+    robot_trajectory.update(xinit, max_u[0], max_u[1], config)
+    human_trajectory.update(xinit, config.human.linear.x, config.human.angular.z, config)
     return max_u
 #################################################################################
 
@@ -425,89 +424,55 @@ def atGoal(config):
     return 0
 
 
-yici=1
+class TrajectoryMarkers:
+    """Initialize the robot and human trajectory markers for RViz."""
+
+    def __init__(self):
+        self.marker = self._create_marker(0.0, 1.0, 0.0)
+        self.h_marker = self._create_marker(0.0, 0.0, 1.0)
+
+    @staticmethod
+    def _create_marker(red, green, blue):
+        marker = Marker()
+        marker.header.frame_id = "odom"
+        marker.type = marker.LINE_STRIP
+        marker.action = marker.ADD
+
+        marker.scale.x = 0.1
+        marker.scale.y = 0.1
+        marker.scale.z = 0.1
+
+        marker.color.a = 1.0
+        marker.color.r = red
+        marker.color.g = green
+        marker.color.b = blue
+
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = 0.0
+        marker.pose.orientation.w = 1.0
+
+        marker.pose.position.x = 0.0
+        marker.pose.position.y = 0.0
+        marker.pose.position.z = 0.0
+        return marker
 
 
+trajectory_markers = TrajectoryMarkers()
+marker = trajectory_markers.marker
+h_marker = trajectory_markers.h_marker
 
-marker =  Marker()
-marker.header.frame_id = "odom"
-marker.type = marker.LINE_STRIP
-marker.action = marker.ADD
-    # marker scale
-marker.scale.x = 0.1
-marker.scale.y = 0.1
-marker.scale.z = 0.1
-
-    # marker color #green
-marker.color.a = 1.0
-marker.color.r = 0.0
-marker.color.g = 1.0
-marker.color.b = 0.0
-
-    # marker orientaiton
-marker.pose.orientation.x = 0.0
-marker.pose.orientation.y = 0.0
-marker.pose.orientation.z = 0.0
-marker.pose.orientation.w = 1.0
-
-    # marker position  ###no influence in line
-marker.pose.position.x = 0.0
-marker.pose.position.y = 0.0
-marker.pose.position.z = 0.0
-
-h_marker =  Marker()
-h_marker.header.frame_id = "odom"
-h_marker.type = h_marker.LINE_STRIP
-h_marker.action = h_marker.ADD
-    # marker scale
-h_marker.scale.x = 0.1
-h_marker.scale.y = 0.1
-h_marker.scale.z = 0.1
-
-    # marker color #green
-h_marker.color.a = 1.0
-h_marker.color.r = 0.0
-h_marker.color.g = 0.0
-h_marker.color.b = 1.0
-
-    # marker orientaiton
-h_marker.pose.orientation.x = 0.0
-h_marker.pose.orientation.y = 0.0
-h_marker.pose.orientation.z = 0.0
-h_marker.pose.orientation.w = 1.0
-
-    # marker position  ###no influence in line
-h_marker.pose.position.x = 0.0
-h_marker.pose.position.y = 0.0
-h_marker.pose.position.z = 0.0
-
-def line(num):
-    # marker line points
-    marker.points = []
+def line(num, target_marker, x_points, y_points):
+    """Replace a trajectory marker's points with the requested samples."""
+    target_marker.points = []
 
     for i in range(num):
-        exec(f"line_point{i} = Point()") 
-        exec(f"line_point{i}.x = list_x[{i}]")
-        exec(f"line_point{i}.y = list_y[{i}]")
-        exec(f"line_point{i}.z = 0.0")
-        exec(f"marker.points.append(line_point{i})")
+        p = Point()
+        p.x = x_points[i]
+        p.y = y_points[i]
+        p.z = 0.0
+        target_marker.points.append(p)
 
-def h_line(num):
-    # marker line points
-    h_marker.points = []
-
-    for i in range(num):
-        exec(f"line_point{i} = Point()") 
-        exec(f"line_point{i}.x = list_x_human[{i}]")
-        exec(f"line_point{i}.y = list_y_human[{i}]")
-        exec(f"line_point{i}.z = 0.0")
-        exec(f"h_marker.points.append(line_point{i})")
-
-
-
-
-inputkey=0
-write=0
 
 def signal_handler(signal, frame):
     print("\nCtrl + C  is pressed,exit sys")
@@ -519,14 +484,11 @@ def signal_handler(signal, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 def listen_key():
-    global write
-
     def on_press(key):
-        global write
         try:
             if key.char == 'y':  # 检测键盘输入 y
-                write = 1
-                print("Key 'y' detected. Variable 'write' set to 1.")
+                runtime_state.save_requested = True
+                print("Key 'y' detected. Save requested.")
         except AttributeError:
             pass
 
@@ -536,19 +498,17 @@ def listen_key():
 
 
 def main():
-    global yici
-    global write
     print(__file__ + " start!!")
     print("human is 0,share is 1")
-    inputkey=1
+    runtime_state.control_mode = 1
     # inputs=input()
     # if inputs=="0":
-    #         inputkey=0
+    #         runtime_state.control_mode = 0
     # elif inputs=="1":
-    #         inputkey=1
+    #         runtime_state.control_mode = 1
     # else:
     #         rospy.loginfo("input error,run as human")
-    #         inputkey = 0
+    #         runtime_state.control_mode = 0
 
     # robot specification
     # rand=RandomNumberGenerator()
@@ -591,14 +551,14 @@ def main():
     # initial linear and angular velocities
     u = np.array([0.0, 0.0])
     if RECORDER==True:
-        file_value=start_rosbag()
+        runtime_state.rosbag_id = start_rosbag()
     #     print("You can press y to stop and save rosbag when you need.")
     start_time = rospy.get_time()
     # runs until terminated externally
     while not rospy.is_shutdown():
         current_time = rospy.get_time() - start_time
 
-        if (inputkey== 1):
+        if runtime_state.control_mode == 1:
             # u = dwa_control(x, u, config, obs.obst,cube,step=current_time,log_writer=log_writer)
             u = dwa_control(x, u, config, processor.xy_set,cube,step=current_time,log_writer=log_writer)
             x[0] = config.x
@@ -608,21 +568,23 @@ def main():
             x[4] = u[1]
             speed.linear.x = x[3]
             speed.angular.z = x[4]
-            line(line_num)
+            line(robot_trajectory.point_count, marker,
+                 robot_trajectory.x_points, robot_trajectory.y_points)
             pub_line.publish(marker)
-            h_line(line_num_human)
+            line(human_trajectory.point_count, h_marker,
+                 human_trajectory.x_points, human_trajectory.y_points)
             pub_line_human.publish(h_marker)
         
         else:
             # if 0 then do directly
             speed.linear.x = config.human.linear.x
             speed.angular.z = config.human.angular.z
-        # if yici>0:
+        # if runtime_state.result_pending:
         #     marker_pub.publish(markers)
         pub.publish(speed)
 
-        if write==1:
-            if yici>0:
+        if runtime_state.save_requested:
+            if runtime_state.result_pending:
                 print("YOU have arrive the goal point")
                 stop_rosbag()
                 # with open(f'/home/frienkie/cood/testnew.txt', 'w') as f:
@@ -630,7 +592,7 @@ def main():
 
                 # change_goal(config,rand.get_next())
                 # goal_sphere(config)
-                yici=0
+                runtime_state.result_pending = False
             
         config.r.sleep()
 
