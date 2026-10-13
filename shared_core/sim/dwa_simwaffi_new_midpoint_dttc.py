@@ -109,7 +109,7 @@ class Config():
             )
         )
         self.showpredict_time = 3.0  # [s]
-        self.movetimemin = 5.0
+        self.movetimemin = 4.0
         self.showdt = 1.0
         self.goal_radius=0.4
         #########################################
@@ -574,18 +574,8 @@ def calc_obstacle_ttc(traj, moving_future, config) -> float:
         return predict_time+1.0
 
     traj = np.asarray(traj)
-    times = np.asarray(config.trajectory_times)
-
-    if len(traj) != len(times):
-        raise ValueError("traj length must match trajectory_times")
-
+    times = config.trajectory_times
     num_steps = min(len(traj), moving_future.shape[1])
-
-    moving_times = np.arange(num_steps) * config.dt
-    if not np.allclose(
-        times[:num_steps], moving_times, rtol=0.0, atol=1e-9
-    ):
-        raise ValueError("traj and moving_future sample times must match")
 
     safe_dist2 = (config.robot_radius + config.cube_half_size) ** 2
 
