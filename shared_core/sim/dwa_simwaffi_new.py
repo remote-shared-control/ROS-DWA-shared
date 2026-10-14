@@ -96,9 +96,7 @@ class Config():
         self.dtsys = 0.1  # [s]
         self.predict_time_static = 2.4  # [s]
         self.predict_time = 5.0  # [s]
-        self.showpredict_time = 3.0  # [s]
         self.movetimemin = 5.0
-        self.showdt = 1.0
         self.goal_radius=0.4
         #########################################
         # self.speed_cost_gain = 1.5 
@@ -370,9 +368,10 @@ def calc_dynamic_window(x, config):
     return vs, ws
 
 class TrajectoryPreview:
-    """Store and update the coordinates of a predicted display trajectory."""
+    """Keep a calculated trajectory and coordinate views for display."""
 
     def __init__(self):
+        self.trajectory = None
         self.x_points = []
         self.y_points = []
 
@@ -380,17 +379,18 @@ class TrajectoryPreview:
     def point_count(self):
         return len(self.x_points)
 
-    def update(self, xinit, v, y, config):
-        x = np.array(xinit)
-        time = 0
-        self.x_points.clear()
-        self.y_points.clear()
+    def set_trajectory(self, traj):
+        """Retain the trajectory without copying or integrating it again."""
+        self.trajectory = traj
+        if traj is None:
+            self.x_points = []
+            self.y_points = []
+        else:
+            self.x_points = traj[:, 0]
+            self.y_points = traj[:, 1]
 
-        while time <= config.showpredict_time:
-            x = motion(x, [v, y], config.dt)
-            self.x_points.append(x[0])
-            self.y_points.append(x[1])
-            time += config.dt
+    def update(self, xinit, v, w, config):
+        self.set_trajectory(calc_trajectory(xinit, v, w, config))
 
 
 robot_trajectory = TrajectoryPreview()
@@ -399,16 +399,16 @@ human_trajectory = TrajectoryPreview()
 # Calculate a trajectory sampled across a prediction time
 def calc_trajectory(xinit, v, y, config):
     x = np.array(xinit)
-    traj = np.array(x)  # many motion models stored per trajectory
+    states = [x.copy()]
     time = 0
 
     while time <= config.predict_time_static:
         # store each motion model along a trajectory
         x = motion(x, [v, y], config.dt)
-        traj = np.vstack((traj, x))
+        states.append(x.copy())
         time += config.dt # next sample
 
-    return traj
+    return np.asarray(states)
 
 
 ################################################################################
@@ -419,6 +419,7 @@ def calc_trajectory(xinit, v, y, config):
 def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     xinit = x[:]
     max_cost = 0.0
+    best_traj = None
     max_u = u
     max_u[0] = 0.0 #no way can be chosen
     max_u[1] = config.human.angular.z
@@ -464,9 +465,10 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
             if max_cost <= final_cost:
                 max_cost = final_cost
                 max_u = [v, w]
+                best_traj = traj
     # if max_u[0]==0.0:
     #     max_u[1]=human.angular.z
-    robot_trajectory.update(xinit, max_u[0], max_u[1], config)
+    robot_trajectory.set_trajectory(best_traj)
     human_trajectory.update(xinit, config.human.linear.x, config.human.angular.z, config)
     return max_u
 #################################################################################

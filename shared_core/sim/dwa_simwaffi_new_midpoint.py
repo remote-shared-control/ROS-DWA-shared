@@ -109,9 +109,7 @@ class Config():
             )
         )
         self.predict_time = 5.0  # [s]
-        self.showpredict_time = 3.0  # [s]
         self.movetimemin = 5.0
-        self.showdt = 1.0
         self.goal_radius=0.4
         #########################################
         # self.speed_cost_gain = 1.5 
@@ -383,9 +381,10 @@ def calc_dynamic_window(x, config):
     return vs, ws
 
 class TrajectoryPreview:
-    """Store and update the coordinates of a predicted display trajectory."""
+    """Keep a calculated trajectory and coordinate views for display."""
 
     def __init__(self):
+        self.trajectory = None
         self.x_points = []
         self.y_points = []
 
@@ -393,17 +392,18 @@ class TrajectoryPreview:
     def point_count(self):
         return len(self.x_points)
 
-    def update(self, xinit, v, y, config):
-        x = np.array(xinit)
-        time = 0
-        self.x_points.clear()
-        self.y_points.clear()
+    def set_trajectory(self, traj):
+        """Retain the trajectory without copying or integrating it again."""
+        self.trajectory = traj
+        if traj is None:
+            self.x_points = []
+            self.y_points = []
+        else:
+            self.x_points = traj[:, 0]
+            self.y_points = traj[:, 1]
 
-        while time <= config.showpredict_time:
-            x = motion(x, [v, y], config.dt)
-            self.x_points.append(x[0])
-            self.y_points.append(x[1])
-            time += config.dt
+    def update(self, xinit, v, w, config):
+        self.set_trajectory(calc_trajectory_midpoint_vw(xinit, v, w, config))
 
 
 robot_trajectory = TrajectoryPreview()
@@ -487,6 +487,60 @@ def calc_trajectory_midpoint(xinit, v, w, config, linear_plan=None):
     return traj
 
 
+def calc_trajectory_midpoint_vw(xinit, v, w, config, linear_plan=None):
+    """Integrate through t_v and t_w, saving only the base sampling states."""
+    x = [float(value) for value in xinit]
+    v0, w0 = x[3], x[4]
+
+    if linear_plan is None:
+        linear_plan = prepare_linear_motion(v0, v, config)
+    v, t_v, a, steps = linear_plan
+
+    w = float(w)
+    dw = w - w0
+    alpha_max = config.max_dyawrate
+    alpha = (
+        alpha_max if dw > 0
+        else (-alpha_max if dw < 0 else 0.0)
+    )
+    t_w = abs(dw) / alpha_max
+
+    # Locate t_w in the intervals already split at t_v.
+    index = bisect_left(steps, (t_w,))
+    if index < len(steps):
+        t1, h, _, save_point = steps[index]
+        t0 = t1 - h
+        # Avoid duplicate boundaries and near-zero intervals.
+        if t_w - t0 > 1e-12 and t1 - t_w > 1e-12:
+            steps = (
+                steps[:index]
+                + (
+                    (t_w, t_w - t0, t0 + 0.5 * (t_w - t0), False),
+                    (t1, t1 - t_w, t_w + 0.5 * (t1 - t_w), save_point),
+                )
+                + steps[index + 1:]
+            )
+
+    traj = np.empty((len(config.trajectory_times), len(x)), dtype=float)
+    traj[0] = x
+    row = 1
+
+    for t1, h, t_mid, save_point in steps:
+        v_mid = v0 + a * t_mid if t_mid < t_v else v
+        w_mid = w0 + alpha * t_mid if t_mid < t_w else w
+        x = motion_midpoint(x, (v_mid, w_mid), h)
+
+        # Keep endpoint speeds at both internal, unsaved switch states.
+        x[3] = v0 + a * t1 if t1 < t_v else v
+        x[4] = w0 + alpha * t1 if t1 < t_w else w
+
+        if save_point:
+            traj[row] = x
+            row += 1
+
+    return traj
+
+
 ################################################################################
 
 
@@ -495,6 +549,7 @@ def calc_trajectory_midpoint(xinit, v, w, config, linear_plan=None):
 def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     xinit = x[:]
     max_cost = 0.0
+    best_traj = None
     max_u = u
     max_u[0] = 0.0 #no way can be chosen
     max_u[1] = config.human.angular.z
@@ -503,7 +558,7 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
         linear_plan = prepare_linear_motion(xinit[3], v, config)
         for w in ws:
 
-            traj = calc_trajectory_midpoint(xinit, v, w, config, linear_plan)
+            traj = calc_trajectory_midpoint_vw(xinit, v, w, config, linear_plan)
 
             to_human_cost = (1-calc_to_human_cost(w,config)) * config.to_human_cost_gain
 
@@ -541,9 +596,10 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
             if max_cost <= final_cost:
                 max_cost = final_cost
                 max_u = [v, w]
+                best_traj = traj
     # if max_u[0]==0.0:
     #     max_u[1]=human.angular.z
-    robot_trajectory.update(xinit, max_u[0], max_u[1], config)
+    robot_trajectory.set_trajectory(best_traj)
     human_trajectory.update(xinit, config.human.linear.x, config.human.angular.z, config)
     return max_u
 #################################################################################

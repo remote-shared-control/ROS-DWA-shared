@@ -83,9 +83,7 @@ class Config():
         self.dtsys = 0.1  # [s]
         self.predict_time_static = 2.4  # [s]
         self.predict_time = 4.0  # [s]
-        self.showpredict_time = 3.0  # [s]
         self.movetimemin = 4.0
-        self.showdt = 1.0
         self.goal_radius=0.4
         #########################################
         # self.speed_cost_gain = 1.5 
@@ -356,58 +354,49 @@ def calc_dynamic_window(x, config):
 
     return vs, ws
 
-list_x=[]
-list_y=[]
-line_num=0
-list_x_human=[]
-list_y_human=[]
-line_num_human=0
+class TrajectoryPreview:
+    """Keep a calculated trajectory and coordinate views for display."""
+
+    def __init__(self):
+        self.trajectory = None
+        self.x_points = []
+        self.y_points = []
+
+    @property
+    def point_count(self):
+        return len(self.x_points)
+
+    def set_trajectory(self, traj):
+        """Retain the trajectory without copying or integrating it again."""
+        self.trajectory = traj
+        if traj is None:
+            self.x_points = []
+            self.y_points = []
+        else:
+            self.x_points = traj[:, 0]
+            self.y_points = traj[:, 1]
+
+    def update(self, xinit, v, w, config):
+        self.set_trajectory(calc_trajectory(xinit, v, w, config))
 
 
-def show_trajectory(xinit, v, y, config):
-    global line_num
-    x = np.array(xinit)
-    time = 0
-    list_x.clear()
-    list_y.clear()
-
-    while time <= config.showpredict_time:
-        # store each motion model along a trajectory
-        x = motion(x, [v, y], config.dt)
-        list_x.append(x[0])
-        list_y.append(x[1])
-        time += config.dt # next sample
-    line_num=len(list_x)
-
-def show_trajectory_human(xinit, v, y, config):
-    global line_num_human
-    x = np.array(xinit)
-    time = 0
-    list_x_human.clear()
-    list_y_human.clear()
-
-    while time <= config.showpredict_time:
-        # store each motion model along a trajectory
-        x = motion(x, [v, y], config.dt)
-        list_x_human.append(x[0])
-        list_y_human.append(x[1])
-        time += config.dt # next sample
-    line_num_human=len(list_x_human)
+robot_trajectory = TrajectoryPreview()
+human_trajectory = TrajectoryPreview()
 
 angle_robot=0.0
 # Calculate a trajectory sampled across a prediction time
 def calc_trajectory(xinit, v, y, config):
     x = np.array(xinit)
-    traj = np.array(x)  # many motion models stored per trajectory
+    states = [x.copy()]
     time = 0
 
     while time <= config.predict_time_static:
         # store each motion model along a trajectory
         x = motion(x, [v, y], config.dt)
-        traj = np.vstack((traj, x))
+        states.append(x.copy())
         time += config.dt # next sample
 
-    return traj
+    return np.asarray(states)
 
 
 ################################################################################
@@ -418,6 +407,7 @@ def calc_trajectory(xinit, v, y, config):
 def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     xinit = x[:]
     max_cost = 0.0
+    best_traj = None
     max_u = u
     max_u[0] = 0.0 #no way can be chosen
     max_u[1] = config.human.angular.z
@@ -454,10 +444,11 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
             if max_cost <= final_cost:
                 max_cost = final_cost
                 max_u = [v, w]
+                best_traj = traj
     # if max_u[0]==0.0:
     #     max_u[1]=human.angular.z
-    show_trajectory(xinit, max_u[0], max_u[1], config)
-    show_trajectory_human(xinit, config.human.linear.x, config.human.angular.z, config)
+    robot_trajectory.set_trajectory(best_traj)
+    human_trajectory.update(xinit, config.human.linear.x, config.human.angular.z, config)
     return max_u
 #################################################################################
 
@@ -562,8 +553,8 @@ def line(num):
 
     for i in range(num):
         p = Point()
-        p.x = list_x[i]
-        p.y = list_y[i]
+        p.x = robot_trajectory.x_points[i]
+        p.y = robot_trajectory.y_points[i]
         p.z = 0.0
         marker.points.append(p)
 
@@ -572,8 +563,8 @@ def h_line(num):
 
     for i in range(num):
         p = Point()
-        p.x = list_x_human[i]
-        p.y = list_y_human[i]
+        p.x = human_trajectory.x_points[i]
+        p.y = human_trajectory.y_points[i]
         p.z = 0.0
         h_marker.points.append(p)
 
@@ -727,9 +718,9 @@ def main():
             x[4] = config.w
             speed.linear.x = u[0]
             speed.angular.z = u[1]
-            line(line_num)
+            line(robot_trajectory.point_count)
             pub_line.publish(marker)
-            h_line(line_num_human)
+            h_line(human_trajectory.point_count)
             pub_line_human.publish(h_marker)
         
         else:
