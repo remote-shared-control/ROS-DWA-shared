@@ -1,0 +1,18 @@
+<launch>
+  <arg name="image_topic" default="/camera/image_raw" />
+  <arg name="velocity_topic" default="/cmd_vel" />
+  <arg name="output_topic" default="/camera/image_dwa_arrow" />
+  <arg name="preview_time" default="1.0" />
+
+  <node pkg="shared_core" type="dwa_camera_arrow.py" name="dwa_camera_arrow" output="screen">
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="velocity_topic" value="$(arg velocity_topic)" />
+    <param name="output_topic" value="$(arg output_topic)" />
+    <param name="preview_time" value="$(arg preview_time)" />
+    <param name="anchor_x" value="0.5" />
+    <param name="anchor_y" value="0.28" />
+    <param name="size_ratio" value="0.32" />
+    <param name="opacity" value="0.9" />
+    <param name="command_timeout" value="0.5" />
+  </node>
+</launch>

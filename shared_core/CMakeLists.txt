@@ -8,8 +8,11 @@ project(shared_core)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
+  cv_bridge
   gazebo_ros
+  geometry_msgs
   rospy
+  sensor_msgs
   std_msgs
   turtlebot3_gazebo
 )
@@ -105,7 +108,7 @@ generate_messages(
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES navigation
-  CATKIN_DEPENDS rospy
+  CATKIN_DEPENDS cv_bridge geometry_msgs rospy sensor_msgs
 #  DEPENDS system_lib
 )
 
@@ -158,6 +161,14 @@ include_directories(
 # See http://ros.org/doc/api/catkin/html/adv_user_guide/variables.html
 
 ## Mark executable scripts (Python etc.) for installation
+catkin_install_python(PROGRAMS
+  camera_arrow/dwa_camera_arrow.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+install(DIRECTORY launch/
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+)
+
 ## in contrast to setup.py, you can choose the destination
 # install(PROGRAMS
 #   scripts/my_python_script

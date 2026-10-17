@@ -43,6 +43,19 @@ export TURTLEBOT3_MODEL=burger
 - Subscribed: `scan`, `cmd_vel_human`,`/filtered_scan`,`/odom`
 - Published: `/cmd_vel`,`line_list`,`line_list_human`
 
+## Camera Direction Arrow
+
+Display a 3D direction arrow in the upper middle of the camera image using the
+final `/cmd_vel` command:
+
+```bash
+roslaunch shared_core camera_arrow.launch image_topic:=/camera/image_raw
+```
+
+For compressed input, set `image_topic:=/camera/image_raw/compressed`.
+View `/camera/image_dwa_arrow` (raw) or `/camera/image_dwa_arrow/compressed` (JPEG).
+See [setup, direction semantics and parameters](shared_core/camera_arrow/README.md).
+
 ## Parameters
 Refer to Class `connfig` for tuning:  
 ```bash
