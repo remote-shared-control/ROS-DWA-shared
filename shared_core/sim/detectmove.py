@@ -7,7 +7,7 @@ class Config:
     def __init__(self):
         self.dt = 0.1
         self.predict_time = 3.0
-        self.obs_radius =0.2
+        self.obs_radius =0.15
 
 
 class GazeboObsReader:

@@ -532,7 +532,7 @@ def main():
     set_robot_position(model_name, target_position, target_orientation)
 
     
-    subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
+    subOdom = rospy.Subscriber("/limo/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
     sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,config.share1,queue_size=1)
@@ -561,15 +561,16 @@ def main():
         current_time = rospy.get_time() - start_time
 
         if runtime_state.control_mode == 1:
-            # u = dwa_control(x, u, config, obs.obst,cube,step=current_time,log_writer=log_writer)
-            u = dwa_control(x, u, config, processor.xy_set,cube,step=current_time,log_writer=log_writer)
             x[0] = config.x
             x[1] = config.y
             x[2] = config.th
             x[3] = u[0]
             x[4] = u[1]
-            speed.linear.x = x[3]
-            speed.angular.z = x[4]
+
+            # u = dwa_control(x, u, config, obs.obst,cube,step=current_time,log_writer=log_writer)
+            u = dwa_control(x, u, config, processor.xy_set,cube,step=current_time,log_writer=log_writer)
+            speed.linear.x = u[0]
+            speed.angular.z = u[1]
             line(robot_trajectory.point_count, marker,
                  robot_trajectory.x_points, robot_trajectory.y_points)
             pub_line.publish(marker)

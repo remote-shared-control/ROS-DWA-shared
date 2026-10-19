@@ -93,7 +93,7 @@ def play_celebration_sound():
     threading.Thread(target=_play, daemon=True).start()
 
 def save(time,distance,count_time,n,m,chizu):# n is direct switch,m is para
-    file_name = "/home/frienkie/result/data.xlsx"
+    file_name = "/home/pc/result/data.xlsx"
 
     # 检查文件是否存在
     if os.path.exists(file_name):
@@ -356,7 +356,7 @@ import pandas as pd
 
 def read_last_value_from_column():
     # 读取Excel文件
-    workbook = load_workbook("/home/frienkie/result/data.xlsx") # 替换为你的Excel文件名
+    workbook = load_workbook("/home/pc/result/data.xlsx") # 替换为你的Excel文件名
     sheet = workbook['Sheet1']  # 替换为你的工作表名
     row=1
     for cell in sheet['P']:
@@ -375,7 +375,7 @@ def read_last_value_from_column():
         return 1
     return valid_values+1
 
-def get_next_rosbag_number(excel_path="/home/frienkie/result/data.xlsx"):
+def get_next_rosbag_number(excel_path="/home/pc/result/data.xlsx"):
     """
     读取Excel A列最后一个编号，并返回+1
     若文件不存在或A列没有数据，则返回1
@@ -488,7 +488,7 @@ def atGoal(config):
         return 1
     return 0
 
-def save_result(a, b, c, file_path="/home/frienkie/result/data.xlsx"):
+def save_result(a, b, c, file_path="/home/pc/result/data.xlsx"):
     """
     将a、b写入A、B列，将c写入同一行F列
     如果文件不存在，则创建并写入表头

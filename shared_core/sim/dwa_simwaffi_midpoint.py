@@ -42,7 +42,7 @@ from lidar3d import *
 import csv
 
 
-RECORDER = True  # Set to True to enable CSV logging, False to disable
+RECORDER = False  # Set to True to enable CSV logging, False to disable
 
 if RECORDER:
     log_dir = "/home/frienkie/rosbagpaper"
@@ -86,8 +86,8 @@ class Config():
         self.min_speed = -1.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
         self.max_yawrate = 1.0  # [rad/s]
-        self.max_accel = 0.8  # [m/ss]
-        self.max_dyawrate = 1.0  # [rad/ss]
+        self.max_accel = 2.5  # [m/ss]
+        self.max_dyawrate = 3.2  # [rad/ss]
         ##################################################33
         self.v_reso = 0.2  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
@@ -95,7 +95,7 @@ class Config():
         #######################################################
         self.dt = 0.4  # [s]
         self.dtsys = 0.05
-        self.predict_time = 5.0  # [s]
+        self.predict_time = 2.4  # [s]
         # Fixed sampling intervals are prepared only once per configuration.
         times = np.append(
             np.arange(0.0, self.predict_time, self.dt),
@@ -126,7 +126,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.21  # [m]
+        self.robot_radius = 0.22  # [m]
         self.obs_radius =0.15
         self.x = 0.0
         self.y = 0.0
@@ -248,22 +248,22 @@ def calc_dynamic_window(x, config):
     # -----------------------------
     v_min = max(
         config.min_speed,
-        x[3] - config.max_accel * config.dt
+        x[3] - config.max_accel * config.predict_time 
     )
 
     v_max = min(
         config.max_speed,
-        x[3] + config.max_accel * config.dt
+        x[3] + config.max_accel * config.predict_time 
     )
 
     w_min = max(
         -config.max_yawrate,
-        x[4] - config.max_dyawrate * config.dt
+        x[4] - config.max_dyawrate * config.predict_time 
     )
 
     w_max = min(
         config.max_yawrate,
-        x[4] + config.max_dyawrate * config.dt
+        x[4] + config.max_dyawrate * config.predict_time 
     )
 
     # -----------------------------
@@ -623,7 +623,6 @@ human_angle=0
 
 def share1(vel_msg):# human command get 获取人类指令
     global human
-    global human_r
     global human_angle
 
     human.linear.x=vel_msg.linear.x
@@ -632,8 +631,8 @@ def share1(vel_msg):# human command get 获取人类指令
     # if human.linear.x<-0.08:
     #     human.linear.x=-0.08
 
-    if human.linear.x<0.0:
-        human.linear.x=0.0
+    # if human.linear.x<0.0:
+    #     human.linear.x=0.0
     human_angle=human.angular.z
     if human.linear.x<=0.001 and human.linear.x>=-0.001:
         human.linear.x = 0.0
@@ -751,7 +750,7 @@ def main():
 
     threading.Thread(target=listen_key, daemon=True).start()
     counter = StringMessageCounter()
-    subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
+    subOdom = rospy.Subscriber("/limo/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
     sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,share1,queue_size=1)
@@ -783,12 +782,13 @@ def main():
     while not rospy.is_shutdown():
         current_time = rospy.get_time() - start_time
         if runtime_state.control_mode == 1:
-            u = dwa_control(x, u, config,processor.xy_set,readob,step=current_time,log_writer=log_writer)
             x[0] = config.x
             x[1] = config.y
             x[2] = config.th
             x[3] = config.v
             x[4] = config.w
+
+            u = dwa_control(x, u, config,processor.xy_set,readob,step=current_time,log_writer=log_writer)
             speed.linear.x = u[0]
             speed.angular.z = u[1]
             line(robot_trajectory.point_count, marker,

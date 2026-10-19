@@ -43,6 +43,36 @@ export TURTLEBOT3_MODEL=burger
 - Subscribed: `scan`, `cmd_vel_human`,`/filtered_scan`,`/odom`
 - Published: `/cmd_vel`,`line_list`,`line_list_human`
 
+## LIMO simulation: repeated wheel TF timestamps
+
+If `dwa_simwaffi_new.py` prints `TF_REPEATED_DATA` for
+`rear_left_wheel_link` or `rear_right_wheel_link`, its `lidar3d.py` TF listener
+is receiving duplicate wheel transforms. The DWA node does not publish them.
+Do not run a synthetic `joint_state_publisher` alongside Gazebo's
+`limo_state_controller`, or multiple robot state publishers for the same frames.
+
+`ped_simulation/config.launch` now starts RViz only by default and uses the
+robot description and TF already provided by the simulation. After updating,
+stop the old `ped_simulation/config.launch`, restart the LIMO simulation launch
+(an earlier duplicate node name may have stopped its robot state publisher),
+then run:
+
+```bash
+roslaunch ped_simulation config.launch
+rosrun shared_core dwa_simwaffi_new.py
+```
+
+For model preview without Gazebo or another robot bringup, use
+`roslaunch ped_simulation config.launch standalone_model:=true`.
+The `limo_viz/view_four_diff_model.launch` and `view_ackerman_model.launch`
+files also start synthetic joint publishers; use the RViz-only
+`limo_viz/view_robot.launch` when the robot simulation is running.
+
+Verify the running graph with `rostopic info /joint_states` and
+`rostopic info /tf`: the wheel states should come from the simulation's
+controller, and each wheel TF should have one publisher. Other TF publishers
+for different frames are normal.
+
 ## Camera Direction Arrow
 
 Display a 3D direction arrow in the upper middle of the camera image using the

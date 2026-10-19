@@ -10,12 +10,12 @@ import math
 class Config:
     def __init__(self):
         self.robot_radius = 0.22         # 机器人半径
-        self.cube_half_size =0.1        # 原始立方体半边长
+        self.cube_half_size =0.15        # 原始立方体半边长
 
 class CubeReader:
     def __init__(self, config):
 
-        self.robot_radius_cal = 0.2
+        self.robot_radius_cal = 0.21
         self.config = config
         self.threshold=5.0
         self.data = None
