@@ -60,7 +60,14 @@ class GazeboObsReader:
         """
 
         num_obs = obs_info.shape[0]
-        num_steps = int(self.config.predict_time / self.config.dt) + 1
+        # Reuse the robot's sampling times so the final collision check aligns.
+        if hasattr(self.config, "trajectory_times"):
+            t = np.asarray(self.config.trajectory_times, dtype=float)
+        else:
+            # Legacy controllers expect uniform dt samples at every index.
+            num_steps = int(self.config.predict_time / self.config.dt) + 1
+            t = np.arange(num_steps) * self.config.dt
+        num_steps = len(t)
 
         # 初始化未来轨迹
         future = np.zeros((num_obs, num_steps, 2))  # x,y
@@ -71,9 +78,6 @@ class GazeboObsReader:
             y0 = obs_info[i, 1]
             vx = obs_info[i, 2]
             vy = obs_info[i, 3]
-
-            # 时间序列
-            t = np.arange(num_steps) * self.config.dt
 
             future[i, :, 0] = x0 + vx * t
             future[i, :, 1] = y0 + vy * t
