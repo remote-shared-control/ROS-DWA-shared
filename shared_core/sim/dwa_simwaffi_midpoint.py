@@ -91,7 +91,7 @@ class Config():
         ##################################################33
         self.v_reso = 0.2  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
-        self.yawrate_reso = 0.05  # [rad/s]
+        self.yawrate_reso = 0.1  # [rad/s]
         #######################################################
         self.dt = 0.4  # [s]
         self.dtsys = 0.05
@@ -119,7 +119,7 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 2.0 #lower = faster
+        self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
@@ -750,7 +750,7 @@ def main():
 
     threading.Thread(target=listen_key, daemon=True).start()
     counter = StringMessageCounter()
-    subOdom = rospy.Subscriber("/limo/odom", Odometry, config.assignOdomCoords)
+    subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
     sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,share1,queue_size=1)

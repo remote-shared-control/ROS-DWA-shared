@@ -532,7 +532,7 @@ def main():
     set_robot_position(model_name, target_position, target_orientation)
 
     
-    subOdom = rospy.Subscriber("/limo/odom", Odometry, config.assignOdomCoords)
+    subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
     sub_hum = rospy.Subscriber("/cmd_vel_human",Twist,config.share1,queue_size=1)
