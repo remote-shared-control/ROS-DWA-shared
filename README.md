@@ -86,6 +86,43 @@ For compressed input, set `image_topic:=/camera/image_raw/compressed`.
 View `/camera/image_dwa_arrow` (raw) or `/camera/image_dwa_arrow/compressed` (JPEG).
 See [setup, direction semantics and parameters](shared_core/camera_arrow/README.md).
 
+## Direct human control with trajectory comparison
+
+```bash
+rosrun shared_core direct_trajectory_compare.py
+```
+
+The standalone node in `shared_core/sim/` immediately forwards each complete
+`/cmd_vel_human` Twist to `/cmd_vel`, without DWA selection or velocity limiting.
+Run it as the active velocity controller; stop other `/cmd_vel` publishers first.
+It sends a zero Twist when the node shuts down.
+
+After both a command and `/odom` arrive, two predictions are updated at 20 Hz
+using the same odometry pose, measured v/w and commanded target v/w. In RViz,
+set Fixed Frame to the odometry frame (normally `odom`) and add two Marker displays:
+
+| Marker topic | Color | Prediction |
+| --- | --- | --- |
+| `/direct_trajectory_compare/line_list` | Green | Original method without midpoint |
+| `/direct_trajectory_compare/line_list_midpoint_vw` | Blue | `calc_trajectory_midpoint_vw` with linear and angular acceleration limits |
+
+Defaults are `~dt:=0.4`, `~predict_time:=2.4`, `~max_accel:=2.5` and
+`~max_dyawrate:=3.2`, matching `dwa_simwaffi_new_midpoint.py`. The original
+method preserves its `while time <= predict_time` loop, so its last point can
+extend one step past the horizon; midpoint v/w ends exactly at the horizon.
+These are predictions of the latest command, rather than a traveled-path history.
+The node does not repeat or expire commands; `/cmd_vel` follows the input rate.
+
+For example, change the prediction interval and horizon with:
+
+```bash
+rosrun shared_core direct_trajectory_compare.py _dt:=0.2 _predict_time:=3.0
+```
+
+Other private parameters: `~input_topic` (`/cmd_vel_human`), `~output_topic`
+(`/cmd_vel`), `~odom_topic` (`/odom`), `~rate` (20 Hz, markers only) and
+`~line_width` (0.05 m).
+
 ## Parameters
 Refer to Class `connfig` for tuning:  
 ```bash

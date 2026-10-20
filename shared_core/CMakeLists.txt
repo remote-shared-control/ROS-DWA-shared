@@ -163,6 +163,7 @@ include_directories(
 ## Mark executable scripts (Python etc.) for installation
 catkin_install_python(PROGRAMS
   camera_arrow/dwa_camera_arrow.py
+  sim/direct_trajectory_compare.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 install(DIRECTORY launch/
