@@ -42,7 +42,7 @@ from lidar3d import *
 # args = parser.parse_args()
 import csv
 
-RECORDER = True  # Set to True to enable CSV logging, False to disable
+RECORDER = False  # Set to True to enable CSV logging, False to disable
 RECORDER_CSV = False  # Set to True to enable CSV logging, False to disable
 if RECORDER_CSV:
     log_dir = "/home/frienkie/rosbagpaper"
@@ -95,7 +95,7 @@ class Config():
         #######################################################
         self.dt = 0.4  # [s]
         self.dtsys = 0.1  # [s]
-        self.predict_time = 4.0  # [s]
+        self.predict_time = 2.4  # [s]
         # Fixed sampling intervals are prepared only once per configuration.
         times = np.append(
             np.arange(0.0, self.predict_time, self.dt),
@@ -108,7 +108,7 @@ class Config():
                 self.trajectory_times, self.trajectory_times[1:]
             )
         )
-        self.movetimemin = 4.0
+        self.movetimemin = 2.0
         self.goal_radius=0.4
         #########################################
         # self.speed_cost_gain = 1.5 
@@ -128,7 +128,8 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.21  # [m]
+        self.robot_radius = 0.225 # [m]
+        self.robot_radius_static = 0.21 # [m]
 
         self.cube_half_size=0.16
         self.obs_radius = self.cube_half_size  # Circular moving obstacle radius.
@@ -550,7 +551,7 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
     max_cost = 0.0
     best_traj = None
     max_u = u
-    max_u[0] = 0.0 #no way can be chosen
+    max_u[0] = -config.human.linear.x #no way can be chosen
     max_u[1] = config.human.angular.z
     # evaluate all trajectory with sampled input in dynamic window
     for v in vs:
@@ -610,13 +611,13 @@ def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], conf
 
     dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2   # (T, N)
 
-    if np.any(dist2 <= config.robot_radius**2):
+    if np.any(dist2 <= config.robot_radius_static**2):
         return float("-Inf")
 
     # 截断：超过 maxdect 的距离不参与计算，等价于原来 minr = config.maxdect 的初始值
     minr = min(np.sqrt(dist2.min()), config.maxdect)
 
-    return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
+    return (minr - config.robot_radius_static) / (config.maxdect - config.robot_radius_static)
 
 def calc_obstacle_ttc(traj, moving_future, config) -> float:
     """Return the first unsafe sample time, or predict_time if none is found.
@@ -798,7 +799,6 @@ def main():
     # position of obstacles
     # obs = Obstacles()
     readob = GazeboObsReader(config)
-    counter = StringMessageCounter()
     # if chizu=="4":
     #     config.robot_radius=0.106
     #     obs.pattern=1
@@ -811,6 +811,7 @@ def main():
     target_position = [0.0, 0.0, 0.148]  # x, y, z
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
+    counter = StringMessageCounter()
 
     
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)

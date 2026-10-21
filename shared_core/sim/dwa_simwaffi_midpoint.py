@@ -126,7 +126,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.22  # [m]
+        self.robot_radius = 0.225 # [m]
         self.obs_radius =0.15
         self.x = 0.0
         self.y = 0.0
@@ -602,8 +602,6 @@ def calc_to_human_cost( v, w,config,traj,n):
     if n==4:# w minus directly
         robot_angle=w
         cost = abs(human_angle-robot_angle)/(config.max_yawrate*2)
-    elif n==5:
-        cost=abs(math.atan2(w,v)-human_r)/math.pi
 
     return cost
 ##################################################################################
@@ -747,9 +745,9 @@ def main():
     target_position = [0.0, 0.0, 0.148]  # x, y, z
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
+    counter = StringMessageCounter()
 
     threading.Thread(target=listen_key, daemon=True).start()
-    counter = StringMessageCounter()
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
