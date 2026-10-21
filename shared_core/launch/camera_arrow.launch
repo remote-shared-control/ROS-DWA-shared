@@ -1,5 +1,5 @@
 <launch>
-  <arg name="image_topic" default="/camera/image_raw" />
+  <arg name="image_topic" default="/camera/color/image_raw" />
   <arg name="velocity_topic" default="/cmd_vel" />
   <arg name="output_topic" default="/camera/image_dwa_arrow" />
   <arg name="preview_time" default="1.0" />

@@ -43,14 +43,17 @@ def motion(x, u, dt):
 
 
 def calc_trajectory(xinit, v, w, config):
-    """Preserve the original Euler rollout, including its last extra step."""
     x = np.array(xinit, dtype=float)
     states = [x.copy()]
-    time = 0.0
-    while time <= config.predict_time_static:
-        x = motion(x, (v, w), config.dt)
+
+    for t0, t1 in zip(
+        config.trajectory_times[:-1],
+        config.trajectory_times[1:]
+    ):
+        dt = t1 - t0
+        x = motion(x, (v, w), dt)
         states.append(x.copy())
-        time += config.dt
+
     return np.asarray(states)
 
 

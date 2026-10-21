@@ -14,7 +14,7 @@ from tf2_ros import LookupException, ConnectivityException, ExtrapolationExcepti
 
 
 class Mid360Processor:
-    def __init__(self,robot_radius=0.2):
+    def __init__(self,robot_radius=0.20):
         self.robot_radius = robot_radius
         self.input_topic  = rospy.get_param("~input_topic",  "/livox/lidar")
         self.target_frame = rospy.get_param("~target_frame", "odom")
