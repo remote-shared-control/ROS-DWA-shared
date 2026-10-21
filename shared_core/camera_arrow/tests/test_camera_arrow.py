@@ -103,7 +103,7 @@ class CommandAndImageTests(unittest.TestCase):
         state.update(0.0, 0.0, 0.0)
         self.assertEqual(state.hint(0.1, 0.5).kind, "stop")
 
-    def test_all_states_start_at_ten_percent_of_image_height(self):
+    def test_all_states_start_at_image_top_without_clipping(self):
         hints = [velocity_hint(v, w) for v, w in (
             (0.3, 0), (0.3, 0.8), (0.3, -0.8), (-0.3, 0),
             (-0.3, 0.8), (0, 0.8), (0, -0.8), (0, 0),
@@ -117,7 +117,8 @@ class CommandAndImageTests(unittest.TestCase):
                     changed = np.any(image != 80, axis=2)
                     ys, xs = np.where(changed)
                     self.assertGreater(len(xs), 0)
-                    self.assertAlmostEqual(int(ys.min()), round(height * 0.1), delta=4)
+                    self.assertGreaterEqual(int(ys.min()), 0)
+                    self.assertLessEqual(int(ys.min()), 5)
                     self.assertTrue(np.all(ys < height * 0.55))
                     self.assertTrue(np.all(xs > width * 0.2))
                     self.assertTrue(np.all(xs < width * 0.8))
@@ -129,7 +130,9 @@ class CommandAndImageTests(unittest.TestCase):
         node.options = {}
         node.timeout = 0.5
         node.anchor = (0.5, 0.28)
-        node.top_margin_ratio = 0.1
+        node.top_margin_ratio = 0.0
+        node.hud_scale = 0.7
+        node.text_gap_ratio = 0.5
         node.size_ratio = 0.32
         node.opacity = 0.9
         node.ros = SimpleNamespace(get_time=lambda: 10.0, logwarn_throttle=Mock())
@@ -297,7 +300,7 @@ class TransportTests(unittest.TestCase):
                 self.create_node({"~image_topic": topic})
 
     def test_top_margin_default_override_and_legacy_placement(self):
-        for value, expected in ((None, 0.1), (0.05, 0.05), (-1.0, None)):
+        for value, expected in ((None, 0.0), (0.05, 0.05), (-1.0, None)):
             with self.subTest(top_margin=value):
                 parameters = {} if value is None else {"~top_margin_ratio": value}
                 node, _, _, _ = self.create_node(parameters)
@@ -306,9 +309,47 @@ class TransportTests(unittest.TestCase):
             with self.subTest(top_margin=value), self.assertRaises(ValueError):
                 self.create_node({"~top_margin_ratio": value})
 
+    def test_compact_scale_and_spacing_defaults_and_validation(self):
+        node, _, _, _ = self.create_node({})
+        self.assertEqual(node.hud_scale, 0.7)
+        self.assertEqual(node.text_gap_ratio, 0.5)
+        node, _, _, _ = self.create_node({"~hud_scale": 0.8, "~text_gap_ratio": 0.25})
+        self.assertEqual(node.hud_scale, 0.8)
+        self.assertEqual(node.text_gap_ratio, 0.25)
+        for parameter, value in (("~hud_scale", 0), ("~hud_scale", float("nan")),
+                                 ("~text_gap_ratio", -1), ("~text_gap_ratio", float("inf"))):
+            with self.subTest(parameter=parameter, value=value), self.assertRaises(ValueError):
+                self.create_node({parameter: value})
+
 
 class RegionRenderingTests(unittest.TestCase):
-    def test_roi_matches_full_frame_render_including_text_shadows_and_clipped_edges(self):
+    def test_label_is_above_arrow_with_half_clearance_and_seventy_percent_scale(self):
+        hints = [velocity_hint(v, w) for v, w in (
+            (0.3, 0), (0.3, 0.8), (-0.3, -0.8), (-0.3, 0.8),
+            (0, 0.8), (0, -0.8), (0, 0),
+        )] + [MotionHint("unavailable", label="INVALID COMMAND")]
+        for hint in hints:
+            with self.subTest(hint=hint):
+                reference = _hud_layout((720, 1280, 3), hint, (0.5, 0.28), 0.32, 0.0,
+                                        hud_scale=1.0, text_gap_ratio=1.0)
+                compact = _hud_layout((720, 1280, 3), hint, (0.5, 0.28), 0.32, 0.0)
+                self.assertAlmostEqual(compact.font_scale, reference.font_scale * 0.7)
+                self.assertAlmostEqual(compact.radius, reference.radius * 0.7, delta=0.5)
+                self.assertAlmostEqual(compact.text_gap, reference.text_gap * 0.7 * 0.5, delta=0.5)
+                padding = max(2, math.ceil(3 * compact.scale))
+                if len(compact.pixels):
+                    np.testing.assert_allclose(np.ptp(compact.pixels, axis=0),
+                                               np.ptp(reference.pixels, axis=0) * 0.7,
+                                               rtol=0, atol=2)
+                    arrow_top = compact.pixels[:, 1].min() - padding
+                else:
+                    arrow_top = compact.center[1] - compact.radius - padding
+                _, baseline = cv2.getTextSize(hint.label, cv2.FONT_HERSHEY_DUPLEX,
+                                              compact.font_scale, round(3 * compact.scale))
+                text_bottom = compact.text_pos[1] + baseline + padding + 1
+                self.assertEqual(arrow_top - text_bottom, compact.text_gap)
+
+    def test_roi_matches_full_frame_render_including_labels_and_clipped_edges(self):
         rng = np.random.default_rng(42)
         hints = [velocity_hint(v, w) for v, w in (
             (0.3, 0), (0.3, 0.8), (0.3, -0.8), (-0.3, 0),
@@ -334,10 +375,58 @@ class RegionRenderingTests(unittest.TestCase):
                         left, top, right, bottom = layout.bounds
                         expected_layer = full_layer[max(0, top):min(480, bottom),
                                                     max(0, left):min(640, right)]
-                        np.testing.assert_array_equal(blend.call_args.args[0], expected_layer)
-                    # OpenCV's SIMD/scalar blend paths can differ by one gray
-                    # level when the ROI row width has a different alignment.
+                        # Anti-aliased edge rasterization can round by one
+                        # channel value at clipped boundaries.
+                        np.testing.assert_allclose(blend.call_args.args[0], expected_layer,
+                                                   rtol=0, atol=1)
+                    # OpenCV's SIMD/scalar blend paths can also round by one
+                    # channel value when the ROI row alignment changes.
                     np.testing.assert_allclose(actual, expected, rtol=0, atol=1)
+
+    def test_face_profile_and_label_plate_remain_visible_on_light_and_dark_images(self):
+        for background in (0, 245):
+            for hint in (velocity_hint(0.3, 0.8), velocity_hint(-0.3, -0.8),
+                         velocity_hint(0, 0.8)):
+                with self.subTest(background=background, hint=hint):
+                    image = np.full((720, 1280, 3), background, dtype=np.uint8)
+                    draw_hud(image, hint, opacity=1.0)
+                    layout = _hud_layout(image.shape, hint, (0.5, 0.28), 0.32, 0.0)
+                    left, top, right, bottom = layout.label_bounds
+                    label = image[top:bottom, left:right]
+                    self.assertLess(int(label.min()), 70)
+                    self.assertGreater(int(label.max()), 200)
+                    face_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+                    count = len(layout.outline)
+                    cv2.fillPoly(face_mask, [layout.pixels[count:]], 255)
+                    face_mask = cv2.erode(face_mask, np.ones((5, 5), dtype=np.uint8))
+                    colors = image[face_mask > 0].astype(int)
+                    if hint.kind == "move":
+                        self.assertGreater(float(colors[:, 0].mean() - colors[:, 2].mean()), 50)
+                    profile_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+                    for polygon in layout.side_layers:
+                        cv2.fillPoly(profile_mask, [polygon], 255)
+                    top_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+                    cv2.fillPoly(top_mask, [layout.pixels[count:]], 255)
+                    top_mask = cv2.dilate(top_mask, np.ones((3, 3), dtype=np.uint8))
+                    profile = image[(profile_mask > 0) & (top_mask == 0)]
+                    self.assertGreater(len(profile), 0)
+                    self.assertGreater(float(np.median(colors) - np.median(profile)), 20)
+
+    def test_cached_layouts_are_immutable_and_follow_direction_resolution_and_scale(self):
+        arguments = ((720, 1280, 3), velocity_hint(0.3, 0.8), (0.5, 0.28), 0.32, 0.0)
+        layout = _hud_layout(*arguments)
+        self.assertIs(_hud_layout(*arguments), layout)
+        for array in (layout.outline, layout.pixels, layout.side_layers, layout.center, layout.text_pos):
+            self.assertFalse(array.flags.writeable)
+        opposite = _hud_layout(arguments[0], velocity_hint(0.3, -0.8), *arguments[2:])
+        self.assertFalse(np.array_equal(layout.pixels, opposite.pixels))
+        resized = _hud_layout((1080, 1920, 3), *arguments[1:])
+        self.assertNotEqual(layout.bounds, resized.bounds)
+        scaled = _hud_layout(*arguments, hud_scale=0.5)
+        self.assertNotEqual(layout.bounds, scaled.bounds)
+        original_pixels = layout.pixels.copy()
+        draw_hud(np.full(arguments[0], 80, dtype=np.uint8), arguments[1])
+        np.testing.assert_array_equal(layout.pixels, original_pixels)
 
     def test_only_small_region_is_blended_and_surrounding_pixels_are_preserved(self):
         rng = np.random.default_rng(7)
@@ -350,7 +439,7 @@ class RegionRenderingTests(unittest.TestCase):
                     draw_hud(actual, hint)
                 layer = blend.call_args.args[0]
                 self.assertLess(layer.shape[0] * layer.shape[1], source.shape[0] * source.shape[1] * 0.15)
-                left, top, right, bottom = _hud_layout(source.shape, hint, (0.5, 0.28), 0.32, 0.1).bounds
+                left, top, right, bottom = _hud_layout(source.shape, hint, (0.5, 0.28), 0.32, 0.0).bounds
                 outside = np.ones(source.shape[:2], dtype=bool)
                 outside[top:bottom, left:right] = False
                 np.testing.assert_array_equal(actual[outside], source[outside])

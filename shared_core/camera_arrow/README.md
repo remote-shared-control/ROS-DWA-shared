@@ -9,9 +9,22 @@
 程序、测试和本说明统一位于与 `sim` 平级的 `camera_arrow/` 目录；
 启动文件仍位于 `launch/camera_arrow.launch`，内容保持不变。
 
-默认将箭头、阴影和文字的整体边界上移到距图像顶部约 10% 高度的位置，
-720p 图像对应约 72 像素留白。各方向均按完整边界对齐，避免裁切倒车或转向箭头。
+默认将整组提示贴近图像顶部，仅保留防止抗锯齿边缘被裁切的少量像素。
+文字位于箭头上方，文字与箭头的间距先减为原来的 50%，再随整体缩放；
+箭头、文字和线条整体按原来的 70% 显示。
+各方向均按完整边界对齐，避免裁切倒车或转向箭头。
 绘制时只复制并透明混合提示所在的小区域，不再为叠加效果复制和混合整幅图像。
+
+视觉设计借鉴 [《Crazy Taxi》的顶部方向箭头](https://store.steampowered.com/manual/71230)
+和 [《Dead Space》的蓝色全息指引](https://www.mobygames.com/game/37332/dead-space/screenshots/xbox360/404524/)，
+由 OpenCV 实时绘制独立的箭头网格。移动方向使用青蓝色顶面、细高光边和较薄的立体侧面；
+原地转向及停止使用琥珀色，命令不可用时使用灰色。文字继续位于箭头上方，
+深色切角底板和状态色标改善明暗背景中的可读性。
+
+当前为速度优先的简化样式：使用三层轮廓绘制立体侧面，省去逐面光照排序、
+高斯阴影、逐像素渐变和多轮遮罩混合，只在最后对局部区域做一次透明混合。
+最近 128 种精确布局会被缓存，键包含方向、文字、分辨率及布局参数；方向不做量化。
+目标为 720p 下单帧绘制约 0.25 ms，实际取决于硬件与负载，不包含图像解码、编码或 ROS 传输。
 
 ## 方向计算
 
@@ -126,18 +139,20 @@ roslaunch shared_core camera_arrow.launch \
 | `output_topic` | `/camera/image_dwa_arrow` | raw 输出；compressed 输出自动添加 `/compressed` 后缀；两者均不能与输入相同 |
 | `preview_time` | `1.0` | 方向预览时间，单位秒 |
 | `anchor_x` | `0.5` | 水平方向的相对中心位置 |
-| `top_margin_ratio` | `0.1` | 整组提示距顶部的留白占图像高度的比例；`-1` 使用原来的 `anchor_y` 中心定位 |
+| `top_margin_ratio` | `0.0` | 整组提示距顶部的留白占图像高度的比例；`-1` 使用原来的 `anchor_y` 中心定位 |
 | `anchor_y` | `0.28` | 仅在 `top_margin_ratio=-1` 时决定垂直中心位置 |
-| `size_ratio` | `0.32` | 尺寸相对图像短边的比例 |
+| `size_ratio` | `0.32` | 基准尺寸相对图像短边的比例，再乘以 `hud_scale` |
+| `hud_scale` | `0.7` | 箭头、文字和阴影的整体缩放比例 |
+| `text_gap_ratio` | `0.5` | 文字与箭头的间距相对原来间距的比例，再随整体缩放 |
 | `opacity` | `0.9` | 箭头不透明度 |
 | `command_timeout` | `0.5` | 速度命令超时，单位秒 |
 | `linear_deadband` | `0.02` | 线速度死区，单位 m/s |
 | `angular_deadband` | `0.05` | 角速度死区，单位 rad/s |
 
-例如，调整顶部留白为图像高度的 8%：
+例如，使用当前的紧凑布局：
 
 ```bash
-rosrun shared_core dwa_camera_arrow.py _top_margin_ratio:=0.08
+rosrun shared_core dwa_camera_arrow.py _hud_scale:=0.7 _text_gap_ratio:=0.5
 ```
 
 ## 离线验证
