@@ -109,15 +109,27 @@ def project_vertices(vertices, center, size):
     return np.column_stack((u, v)), depth
 
 
-def draw_hud(image, hint, anchor=(0.5, 0.28), size_ratio=0.32, opacity=0.9):
-    """Draw an extruded, shaded arrow in-place on a uint8 BGR image."""
+@dataclass
+class _HudLayout:
+    outline: np.ndarray
+    pixels: np.ndarray
+    depth: np.ndarray
+    center: np.ndarray
+    radius: int
+    text_pos: np.ndarray
+    font_scale: float
+    bounds: tuple
+
+
+def _hud_layout(image_shape, hint, anchor, size_ratio, top_margin_ratio):
+    """Prepare geometry once, including text/shadow bounds and top alignment."""
     import cv2
 
-    height, width = image.shape[:2]
+    height, width = image_shape[:2]
     center = np.array([width * anchor[0], height * anchor[1]])
     size = min(width, height) * size_ratio
-    layer = image.copy()
     outline = arrow_outline(hint)
+    radius = max(5, int(size * 0.14))
     if len(outline):
         count = len(outline)
         vertices = np.vstack((
@@ -126,6 +138,47 @@ def draw_hud(image, hint, anchor=(0.5, 0.28), size_ratio=0.32, opacity=0.9):
         ))
         projected, depth = project_vertices(vertices, center, size)
         pixels = np.rint(projected).astype(np.int32)
+        # Include the offset shadow, outlines and anti-aliased edge pixels.
+        lower = np.minimum(pixels.min(axis=0), (pixels[:count] + (4, 6)).min(axis=0)) - 3
+        upper = np.maximum(pixels.max(axis=0), (pixels[:count] + (4, 6)).max(axis=0)) + 4
+    else:
+        pixels = np.empty((0, 2), dtype=np.int32)
+        depth = np.empty(0)
+        marker_center = np.rint(center).astype(np.int32)
+        lower = marker_center - radius - 3
+        upper = marker_center + radius + 4
+
+    font_scale = max(0.3, size / 300.0)
+    text_size, _ = cv2.getTextSize(hint.label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+    text_pos = np.array([int(center[0] - text_size[0] / 2),
+                         int(center[1] + size * 0.62)], dtype=np.int32)
+    # The black text outline uses thickness 3 and extends below the baseline.
+    (text_width, text_height), baseline = cv2.getTextSize(
+        hint.label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 3
+    )
+    lower = np.minimum(lower, text_pos + (-3, -text_height - 3))
+    upper = np.maximum(upper, text_pos + (text_width + 4, baseline + 4))
+    marker_center = np.rint(center).astype(np.int32)
+    if top_margin_ratio is not None:
+        shift = int(round(height * top_margin_ratio)) - int(lower[1])
+        pixels[:, 1] += shift
+        marker_center[1] += shift
+        text_pos[1] += shift
+        lower[1] += shift
+        upper[1] += shift
+    return _HudLayout(outline, pixels, depth, marker_center, radius, text_pos,
+                      font_scale, (*lower.tolist(), *upper.tolist()))
+
+
+def _draw_hud_layer(layer, hint, layout, offset):
+    """Paint prepared geometry into a local layer, without copying the frame."""
+    import cv2
+
+    outline = layout.outline
+    pixels = layout.pixels - offset
+    depth = layout.depth
+    if len(outline):
+        count = len(outline)
         cv2.fillPoly(layer, [pixels[:count] + (4, 6)], (25, 25, 25), cv2.LINE_AA)
 
         # Painter's order and face lighting make this a 3D mesh, rather than
@@ -144,8 +197,8 @@ def draw_hud(image, hint, anchor=(0.5, 0.28), size_ratio=0.32, opacity=0.9):
         cv2.fillPoly(layer, [pixels[count:]], tuple(base_color.tolist()), cv2.LINE_AA)
         cv2.polylines(layer, [pixels[count:]], True, (200, 245, 220), 1, cv2.LINE_AA)
     else:
-        c = tuple(np.rint(center).astype(int).tolist())
-        radius = max(5, int(size * 0.14))
+        c = tuple((layout.center - offset).tolist())
+        radius = layout.radius
         color = (70, 180, 245) if hint.kind == "stop" else (170, 170, 170)
         cv2.circle(layer, c, radius, color, 2, cv2.LINE_AA)
         if hint.kind == "stop":
@@ -153,14 +206,33 @@ def draw_hud(image, hint, anchor=(0.5, 0.28), size_ratio=0.32, opacity=0.9):
             cv2.rectangle(layer, (c[0] - half, c[1] - half),
                           (c[0] + half, c[1] + half), color, -1)
 
-    font_scale = max(0.3, size / 300.0)
-    text_size, _ = cv2.getTextSize(hint.label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
-    text_pos = (int(center[0] - text_size[0] / 2), int(center[1] + size * 0.62))
+    font_scale = layout.font_scale
+    text_pos = tuple((layout.text_pos - offset).tolist())
     cv2.putText(layer, hint.label, text_pos, cv2.FONT_HERSHEY_SIMPLEX,
                 font_scale, (15, 15, 15), 3, cv2.LINE_AA)
     cv2.putText(layer, hint.label, text_pos, cv2.FONT_HERSHEY_SIMPLEX,
                 font_scale, (240, 245, 240), 1, cv2.LINE_AA)
-    cv2.addWeighted(layer, opacity, image, 1.0 - opacity, 0.0, dst=image)
+
+
+def draw_hud(image, hint, anchor=(0.5, 0.28), size_ratio=0.32, opacity=0.9,
+             top_margin_ratio=0.1):
+    """Blend only the HUD's bounding region; default top margin is 10% of H.
+
+    Set top_margin_ratio=None to use the original anchor_y center placement.
+    """
+    import cv2
+
+    layout = _hud_layout(image.shape, hint, anchor, size_ratio, top_margin_ratio)
+    height, width = image.shape[:2]
+    left, top, right, bottom = layout.bounds
+    left, top = max(0, left), max(0, top)
+    right, bottom = min(width, right), min(height, bottom)
+    if left >= right or top >= bottom:
+        return image
+    region = image[top:bottom, left:right]
+    layer = region.copy()
+    _draw_hud_layer(layer, hint, layout, np.array([left, top], dtype=np.int32))
+    cv2.addWeighted(layer, opacity, region, 1.0 - opacity, 0.0, dst=region)
     return image
 
 
@@ -206,6 +278,10 @@ class CameraArrowNode:
         self.timeout = float(rospy.get_param("~command_timeout", 0.5))
         self.anchor = (float(rospy.get_param("~anchor_x", 0.5)),
                        float(rospy.get_param("~anchor_y", 0.28)))
+        top_margin = float(rospy.get_param("~top_margin_ratio", 0.1))
+        if not math.isfinite(top_margin) or (top_margin != -1.0 and not 0.0 <= top_margin < 1.0):
+            raise ValueError("top_margin_ratio must be in [0, 1), or -1 for anchor_y placement")
+        self.top_margin_ratio = None if top_margin == -1.0 else top_margin
         self.size_ratio = float(rospy.get_param("~size_ratio", 0.32))
         self.opacity = float(rospy.get_param("~opacity", 0.9))
         if not math.isfinite(self.timeout) or self.timeout <= 0.0:
@@ -254,7 +330,8 @@ class CameraArrowNode:
                 # cv_bridge may return a read-only view of the incoming image.
                 image = self.bridge.imgmsg_to_cv2(message, desired_encoding="bgr8").copy()
             hint = self.state.hint(self.ros.get_time(), self.timeout, **self.options)
-            draw_hud(image, hint, self.anchor, self.size_ratio, self.opacity)
+            draw_hud(image, hint, self.anchor, self.size_ratio, self.opacity,
+                     top_margin_ratio=self.top_margin_ratio)
             if publish_raw:
                 output = self.bridge.cv2_to_imgmsg(image, encoding="bgr8")
                 output.header = message.header

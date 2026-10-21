@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dwa_camera_arrow import (
     CameraArrowNode, CommandState, MotionHint, arrow_outline, draw_hud,
     decode_compressed_image, project_vertices, resolve_input_transport, velocity_hint,
+    _draw_hud_layer, _hud_layout,
 )
 
 
@@ -102,12 +103,12 @@ class CommandAndImageTests(unittest.TestCase):
         state.update(0.0, 0.0, 0.0)
         self.assertEqual(state.hint(0.1, 0.5).kind, "stop")
 
-    def test_all_states_render_in_the_upper_middle_at_multiple_resolutions(self):
+    def test_all_states_start_at_ten_percent_of_image_height(self):
         hints = [velocity_hint(v, w) for v, w in (
             (0.3, 0), (0.3, 0.8), (0.3, -0.8), (-0.3, 0),
             (-0.3, 0.8), (0, 0.8), (0, -0.8), (0, 0),
-        )] + [MotionHint("unavailable")]
-        for width, height in ((640, 480), (1280, 720), (320, 240)):
+        )] + [MotionHint("unavailable"), MotionHint("unavailable", label="STALE COMMAND")]
+        for width, height in ((640, 480), (1280, 720), (320, 240), (1920, 1080)):
             for hint in hints:
                 with self.subTest(size=(width, height), hint=hint):
                     image = np.full((height, width, 3), 80, dtype=np.uint8)
@@ -116,7 +117,7 @@ class CommandAndImageTests(unittest.TestCase):
                     changed = np.any(image != 80, axis=2)
                     ys, xs = np.where(changed)
                     self.assertGreater(len(xs), 0)
-                    self.assertTrue(np.all(ys > height * 0.08))
+                    self.assertAlmostEqual(int(ys.min()), round(height * 0.1), delta=4)
                     self.assertTrue(np.all(ys < height * 0.55))
                     self.assertTrue(np.all(xs > width * 0.2))
                     self.assertTrue(np.all(xs < width * 0.8))
@@ -128,6 +129,7 @@ class CommandAndImageTests(unittest.TestCase):
         node.options = {}
         node.timeout = 0.5
         node.anchor = (0.5, 0.28)
+        node.top_margin_ratio = 0.1
         node.size_ratio = 0.32
         node.opacity = 0.9
         node.ros = SimpleNamespace(get_time=lambda: 10.0, logwarn_throttle=Mock())
@@ -293,6 +295,65 @@ class TransportTests(unittest.TestCase):
         for topic in ("/camera/image_dwa_arrow", "/camera/image_dwa_arrow/compressed"):
             with self.subTest(topic=topic), self.assertRaises(ValueError):
                 self.create_node({"~image_topic": topic})
+
+    def test_top_margin_default_override_and_legacy_placement(self):
+        for value, expected in ((None, 0.1), (0.05, 0.05), (-1.0, None)):
+            with self.subTest(top_margin=value):
+                parameters = {} if value is None else {"~top_margin_ratio": value}
+                node, _, _, _ = self.create_node(parameters)
+                self.assertEqual(node.top_margin_ratio, expected)
+        for value in (-0.2, 1.0, float("nan")):
+            with self.subTest(top_margin=value), self.assertRaises(ValueError):
+                self.create_node({"~top_margin_ratio": value})
+
+
+class RegionRenderingTests(unittest.TestCase):
+    def test_roi_matches_full_frame_render_including_text_shadows_and_clipped_edges(self):
+        rng = np.random.default_rng(42)
+        hints = [velocity_hint(v, w) for v, w in (
+            (0.3, 0), (0.3, 0.8), (0.3, -0.8), (-0.3, 0),
+            (-0.3, -0.8), (-0.3, 0.8), (0, 0.8), (0, -0.8), (0, 0),
+        )] + [MotionHint("unavailable", label="INVALID COMMAND")]
+        placements = (
+            ((0.5, 0.28), 0.32, 0.1), ((0.5, 0.28), 0.32, None),
+            ((0.01, 0.01), 0.6, None), ((0.99, 0.99), 0.6, None),
+            ((0.5, 0.28), 0.05, 0.0), ((0.5, 0.28), 0.32, 0.95),
+        )
+        source = rng.integers(0, 256, (480, 640, 3), dtype=np.uint8)
+        for hint in hints:
+            for anchor, size, margin in placements:
+                with self.subTest(hint=hint, anchor=anchor, size=size, margin=margin):
+                    layout = _hud_layout(source.shape, hint, anchor, size, margin)
+                    full_layer = source.copy()
+                    _draw_hud_layer(full_layer, hint, layout, np.zeros(2, dtype=np.int32))
+                    expected = cv2.addWeighted(full_layer, 0.9, source, 0.1, 0.0)
+                    actual = source.copy()
+                    with patch("cv2.addWeighted", wraps=cv2.addWeighted) as blend:
+                        draw_hud(actual, hint, anchor, size, 0.9, top_margin_ratio=margin)
+                    if blend.called:
+                        left, top, right, bottom = layout.bounds
+                        expected_layer = full_layer[max(0, top):min(480, bottom),
+                                                    max(0, left):min(640, right)]
+                        np.testing.assert_array_equal(blend.call_args.args[0], expected_layer)
+                    # OpenCV's SIMD/scalar blend paths can differ by one gray
+                    # level when the ROI row width has a different alignment.
+                    np.testing.assert_allclose(actual, expected, rtol=0, atol=1)
+
+    def test_only_small_region_is_blended_and_surrounding_pixels_are_preserved(self):
+        rng = np.random.default_rng(7)
+        source = rng.integers(0, 256, (720, 1280, 3), dtype=np.uint8)
+        for hint in (velocity_hint(0.3, 0.8), velocity_hint(0, -0.8),
+                     MotionHint("unavailable", label="INVALID COMMAND")):
+            with self.subTest(hint=hint):
+                actual = source.copy()
+                with patch("cv2.addWeighted", wraps=cv2.addWeighted) as blend:
+                    draw_hud(actual, hint)
+                layer = blend.call_args.args[0]
+                self.assertLess(layer.shape[0] * layer.shape[1], source.shape[0] * source.shape[1] * 0.15)
+                left, top, right, bottom = _hud_layout(source.shape, hint, (0.5, 0.28), 0.32, 0.1).bounds
+                outside = np.ones(source.shape[:2], dtype=bool)
+                outside[top:bottom, left:right] = False
+                np.testing.assert_array_equal(actual[outside], source[outside])
 
 
 if __name__ == "__main__":

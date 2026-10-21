@@ -1,13 +1,17 @@
 # 在相机图像上显示 DWA 方向箭头
 
 `camera_arrow/dwa_camera_arrow.py` 直接订阅最终输出的 `Twist`，取
-`linear.x = v` 和 `angular.z = w`，在相机图像的中上方
+`linear.x = v` 和 `angular.z = w`，在相机图像的顶部中央
 绘制具有透视、厚度和明暗面的 3D 箭头。现有 DWA 程序已经向 `/cmd_vel`
 发布最终选择的速度，因此无需改动 `robot_trajectory.set_trajectory(best_traj)`，
 也不需要重新预测轨迹或转换 `odom` 坐标。
 
 程序、测试和本说明统一位于与 `sim` 平级的 `camera_arrow/` 目录；
 启动文件仍位于 `launch/camera_arrow.launch`，内容保持不变。
+
+默认将箭头、阴影和文字的整体边界上移到距图像顶部约 10% 高度的位置，
+720p 图像对应约 72 像素留白。各方向均按完整边界对齐，避免裁切倒车或转向箭头。
+绘制时只复制并透明混合提示所在的小区域，不再为叠加效果复制和混合整幅图像。
 
 ## 方向计算
 
@@ -121,17 +125,25 @@ roslaunch shared_core camera_arrow.launch \
 | `velocity_topic` | `/cmd_vel` | 最终 `geometry_msgs/Twist` |
 | `output_topic` | `/camera/image_dwa_arrow` | raw 输出；compressed 输出自动添加 `/compressed` 后缀；两者均不能与输入相同 |
 | `preview_time` | `1.0` | 方向预览时间，单位秒 |
-| `anchor_x` / `anchor_y` | `0.5` / `0.28` | 图像中的相对位置，左上角为 `(0, 0)` |
+| `anchor_x` | `0.5` | 水平方向的相对中心位置 |
+| `top_margin_ratio` | `0.1` | 整组提示距顶部的留白占图像高度的比例；`-1` 使用原来的 `anchor_y` 中心定位 |
+| `anchor_y` | `0.28` | 仅在 `top_margin_ratio=-1` 时决定垂直中心位置 |
 | `size_ratio` | `0.32` | 尺寸相对图像短边的比例 |
 | `opacity` | `0.9` | 箭头不透明度 |
 | `command_timeout` | `0.5` | 速度命令超时，单位秒 |
 | `linear_deadband` | `0.02` | 线速度死区，单位 m/s |
 | `angular_deadband` | `0.05` | 角速度死区，单位 rad/s |
 
+例如，调整顶部留白为图像高度的 8%：
+
+```bash
+rosrun shared_core dwa_camera_arrow.py _top_margin_ratio:=0.08
+```
+
 ## 离线验证
 
 无需 ROS，安装 NumPy / OpenCV 后可运行方向计算、渲染、命令超时、raw / compressed
-图像转换及订阅类型测试；也可单独运行已有轨迹选择回归测试：
+图像转换、订阅类型及局部绘制边界测试；也可单独运行已有轨迹选择回归测试：
 
 ```bash
 python3 -B -m unittest discover -s shared_core/camera_arrow/tests -v
