@@ -62,6 +62,7 @@ def load_controller(source, filename):
             (args[1] if len(args) > 2 else args[0]) - config.human.angular.z
         ),
         calc_obstacle_cost=lambda *args: 0.8,
+        calc_moving_obstacle_cost=lambda *args: 0.8,
         cal_time=lambda *args: 100.0,
         calc_obstacle_ttc=lambda *args: 100.0,
         angle_robot=0.0,
@@ -91,7 +92,7 @@ def run_selection(namespace, config, vs, ws):
     state = np.array([1.0, -2.0, 0.7, -0.1, -0.2])
     result = namespace["calc_final_input"](
         state, [0.0, 0.0], vs, ws, config, None,
-        SimpleNamespace(moving_future=None)
+        SimpleNamespace(moving_future=None, obs_info=np.empty((0, 6)))
     )
     return state, result
 
@@ -102,6 +103,27 @@ class TrajectoryPreviewTests(unittest.TestCase):
         for path in CONTROLLERS:
             namespace, config = load_controller(path.read_text(encoding="utf-8"), str(path))
             yield path, namespace, config
+
+    def test_midpoint_combines_separate_clearances_and_rejects_moving_collision(self):
+        path = SIM_DIR / "dwa_simwaffi_midpoint.py"
+        namespace, config = load_controller(path.read_text(encoding="utf-8"), str(path))
+        namespace["calc_to_human_cost"] = lambda *args: 0.0
+        namespace["calc_obstacle_cost"] = lambda traj, *args: (
+            0.9 if np.isclose(traj[-1, 4], 0.2) else 0.2
+        )
+        namespace["calc_moving_obstacle_cost"] = lambda traj, *args: (
+            0.1 if np.isclose(traj[-1, 4], 0.2) else 1.0
+        )
+        _, result = run_selection(namespace, config, [0.3], [0.2, 0.6])
+        self.assertEqual(result, [0.3, 0.6])
+        config.move_obs_gain = 0.1
+        _, result = run_selection(namespace, config, [0.3], [0.2, 0.6])
+        self.assertEqual(result, [0.3, 0.2])
+
+        namespace["calc_moving_obstacle_cost"] = lambda *args: float("-inf")
+        _, result = run_selection(namespace, config, [0.3], [0.2, 0.6])
+        self.assertEqual(result, [0.0, 0.2])
+        self.assertIsNone(namespace["robot_trajectory"].trajectory)
 
     def test_winner_reuses_candidate_without_another_robot_prediction(self):
         for path, namespace, config in self.controllers():
