@@ -53,7 +53,7 @@ if RECORDER:
     log_writer.writerow([
         "TIME", "v", "w",
         "to_human_cost", "speed_cost",
-        "ob_cost", "final_cost"
+        "ob_cost", "ob_movecost", "final_cost"
     ])
     print("✅ CSV logging enabled")
 else:
@@ -121,12 +121,15 @@ class Config():
         self.to_human_cost_gain = 1.0 #lower = detour
         self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
+        self.move_obs_gain = 1.0
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.22  # [m]
+        self.robot_radius = 0.225  # [m]
+        self.robot_radius_static = 0.21  # [m]
+
         self.obs_radius =0.15
         self.x = 0.0
         self.y = 0.0
@@ -520,12 +523,19 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
 
             speed_cost = config.speed_cost_gain *(1-abs(human.linear.x - v)/(config.max_speed-config.min_speed))
 
-            ob_cost = calc_obstacle_cost(traj, ob, config,readob) * config.obs_cost_gain
+            ob_cost = calc_obstacle_cost(traj, ob, config) * config.obs_cost_gain
 
             if np.isinf(ob_cost):
                 continue
+
+            ob_movecost = calc_moving_obstacle_cost(
+                traj, readob.moving_future, readob.obs_info, config
+            ) * config.move_obs_gain
+
+            if np.isinf(ob_movecost):
+                continue
             
-            final_cost = to_human_cost + speed_cost + ob_cost
+            final_cost = to_human_cost + speed_cost + ob_cost + ob_movecost
             # if log_writer and RECORDER is not None:
             #     log_writer.writerow([
             #         round(step, 3),                   # ← 第几次 while
@@ -534,6 +544,7 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
             #         to_human_cost,
             #         speed_cost,
             #         ob_cost,
+            #         ob_movecost,
             #         final_cost
             #     ])
 
@@ -550,48 +561,43 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
 #################################################################################
 
 
-# Calculate obstacle cost inf: collision, 0:free
-def calc_obstacle_cost(traj, ob, config,readob):
-    skip_n = 1
-    minr = config.maxdect
-    moving_future = readob.moving_future
-    obs_info=readob.obs_info
-    # 安全检查：如果 moving_future 为 None 或为空，则跳过移动障碍物检查
-    if moving_future is None or moving_future.shape[0] == 0:
-        num_obs = 0
-    else:
-        num_obs = moving_future.shape[0]
-    oxs, oys = ob
-    # Loop through every obstacle in set and calc Pythagorean distance
-    # Use robot radius to determine if collision
-    if oxs.size > 0:
-        for ii in range(1, len(traj[:, 1]), skip_n):
-            dx = traj[ii, 0] - oxs
-            dy = traj[ii, 1] - oys
+# Static obstacle score: -inf for collision, otherwise normalized clearance.
+def calc_obstacle_cost(traj, ob, config):
+    ox_arr, oy_arr = ob
 
-            r = np.hypot(dx, dy)
+    if ox_arr.size == 0 or oy_arr.size == 0 or len(traj) <= 1:
+        return 1.0
 
-            if np.any(r <= config.robot_radius):
-                return float("-Inf")
+    tx = traj[1:, 0:1]
+    ty = traj[1:, 1:2]
+    dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2
 
-            minr = min(minr, np.min(r))
+    if np.any(dist2 <= config.robot_radius_static**2):
+        return float("-Inf")
 
-    for obs_i in range(num_obs):
-        mob_traj = moving_future[obs_i]    # shape = (num_steps, 2)
-        mob_radius = obs_info[obs_i, 4]    # 半径
+    minr = min(np.sqrt(dist2.min()), config.maxdect)
+    return (minr - config.robot_radius_static) / (config.maxdect - config.robot_radius_static)
 
-        for t_i in range(mob_traj.shape[0]):
-            dx = traj[t_i, 0] - mob_traj[t_i, 0]
-            dy = traj[t_i, 1] - mob_traj[t_i, 1]
-            dist = np.hypot(dx, dy)-mob_radius
 
-            if dist <= config.robot_radius:
-                return float("-Inf")
-                # print(f"Collision at obs {obs_i}, timestep {t_i}")
-            if minr>dist:
-                minr=dist
+def calc_moving_obstacle_cost(traj, moving_future, obs_info, config):
+    """Score synchronized moving-obstacle clearance, including the t=0 sample."""
+    if moving_future is None or moving_future.size == 0:
+        return 1.0
 
-    return (minr-config.robot_radius)/(config.maxdect-config.robot_radius)
+    # Both predictions share sampling times; check only their common range.
+    num_steps = min(len(traj), moving_future.shape[1])
+    if num_steps == 0:
+        return 1.0
+
+    dx = traj[None, :num_steps, 0] - moving_future[:, :num_steps, 0]
+    dy = traj[None, :num_steps, 1] - moving_future[:, :num_steps, 1]
+    distances = np.hypot(dx, dy) - obs_info[:, 4:5]
+
+    if np.any(distances <= config.robot_radius):
+        return float("-Inf")
+
+    minr = min(distances.min(), config.maxdect)
+    return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 
 ############################################################################
 def calc_to_human_cost( v, w,config,traj,n):
