@@ -736,7 +736,7 @@ def main():
     model_name = "limo"
     # 指定目标位置和方向 (四元数)
     target_position = [0.0, 0.0, 0.148]  # x, y, z
-    target_orientation = [0.0, 0.0, 0.0,  1.0]  # x, y, z, w
+    target_orientation = [0.0, 0.0, 0.0, 1.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
     counter = StringMessageCounter()
 
