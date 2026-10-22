@@ -59,11 +59,14 @@ and publish motion commands. There is no fixed 0.8-second startup sleep.
 Missing topics, an incorrect initial pose, or a write failure abort startup;
 an active recorder failure also stops the controller's velocity output.
 
-Bag numbering still comes from `/home/pc/result/data.xlsx`, with output in
-`~/rosbag/rosbagN.bag`. While recording, the file has a `.bag.active` suffix.
-Stopping a ready recorder drains pending messages and closes the bag before renaming it.
-Existing recordings are not overwritten; failed recordings retain `.active`
-files for inspection. The recorder uses ROS time for message receipt stamps
+Bag numbering uses the largest ID in `/home/pc/result/data.xlsx`, then adds
+one (or starts at one when no IDs exist). Existing filenames do not change
+the selected ID. Recording writes to `~/rosbag/rosbagN.bag.active`, overwriting
+any same-name unfinished recording. Stopping a ready recorder drains pending
+messages, closes the bag, and replaces any existing `rosbagN.bag` with the new
+recording. If the new attempt fails, its `.active` file remains for inspection
+and an existing completed `.bag` is kept until a successful replacement.
+The recorder uses ROS time for message receipt stamps
 and wall time for its startup timeout, including when Gazebo is paused.
 
 Private ROS parameters:

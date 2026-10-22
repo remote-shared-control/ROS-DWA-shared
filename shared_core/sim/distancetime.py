@@ -376,29 +376,19 @@ def read_last_value_from_column():
     return valid_values+1
 
 def get_next_rosbag_number(excel_path="/home/pc/result/data.xlsx"):
-    """
-    读取Excel A列最后一个编号，并返回+1
-    若文件不存在或A列没有数据，则返回1
-    """
-
-    if not os.path.exists(excel_path):
-        return 1
-
-    wb = load_workbook(excel_path, data_only=True)
-    ws = wb.active
-
+    """Choose the next Excel ID; existing bag files do not change the ID."""
     last_num = 0
-
-    # 从第二行开始（第一行为表头）
-    for row in range(2, ws.max_row + 1):
-        value = ws.cell(row=row, column=1).value
-        if value is None:
-            continue
-
+    if os.path.exists(excel_path):
+        wb = load_workbook(excel_path, data_only=True, read_only=True)
         try:
-            last_num = int(value)
-        except:
-            continue
+            for row in wb.active.iter_rows(min_row=2, min_col=1, max_col=1,
+                                           values_only=True):
+                try:
+                    last_num = max(last_num, int(row[0]))
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        finally:
+            wb.close()
 
     return last_num + 1
 

@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import math
+import os
 from pathlib import Path
 import signal
 import sys
@@ -105,6 +106,11 @@ class WriterTests(unittest.TestCase):
         self.assertFalse(writer.write("/odom", odom(), stamp()))
         self.assertTrue(writer.write("/odom", odom(y=1.5), stamp()))
 
+    def test_position_within_one_centimetre_passes_initial_pose_check(self):
+        writer = self.make_writer()
+        writer.write("/odom", odom(x=0.006, y=0.006), stamp())
+        self.assertTrue(writer.write("/cmd_vel", twist(), stamp()))
+
     def test_receipt_timestamp_and_latching_header_are_preserved(self):
         writer = self.make_writer()
         msg = odom()
@@ -169,10 +175,26 @@ class SessionTests(unittest.TestCase):
         session.process.wait.assert_called_once_with(timeout=5.0)
         session.process.stdout.close.assert_called_once()
         session = self.make_session()
+        session.opened = True
         session.process.returncode = 1
         session.process.poll.return_value = 1
         with self.assertRaisesRegex(RuntimeError, "active"):
             session.stop()
+
+    def test_startup_error_before_open_is_not_reported_as_close_failure(self):
+        session = self.make_session()
+        session.process.poll.return_value = 1
+        session.process.returncode = 1
+        # The error can arrive after the process exit was first observed.
+        session.reader = Mock()
+        session.reader.join.side_effect = lambda **_: session.events.put({
+            "event": "error", "message": "Permission denied: /tmp/test.bag.active",
+        })
+        with self.assertRaisesRegex(RuntimeError, "Permission denied.*bag.active"):
+            session.check()
+        self.assertFalse(session.opened)
+        session.stop()
+        session.process.send_signal.assert_not_called()
 
     def test_real_process_pipe_handshake_and_sigint_shutdown(self):
         child_source = '''
@@ -313,6 +335,73 @@ class RecorderLifecycleTests(unittest.TestCase):
             self.assertFalse(Path(output).exists())
             self.assertTrue(Path(output + ".active").exists())
 
+    def test_existing_bag_and_partial_file_are_overwritten(self):
+        cases = (("run.bag",), ("run.bag.active",), ("run.bag", "run.bag.active"))
+        for filenames in cases:
+            with self.subTest(filenames=filenames), tempfile.TemporaryDirectory() as directory:
+                for filename in filenames:
+                    (Path(directory) / filename).write_text("old recording")
+                unrelated = Path(directory) / "other.bag"
+                unrelated.write_text("keep this recording")
+                output, events = self.run_with_fake_ros(directory)
+                self.assertIn(("ready",), events)
+                self.assertEqual(Path(output).read_text().splitlines(), [
+                    "/odom", "/cmd_vel", "/dynamic_obstacle_states", "/cmd_vel",
+                ])
+                self.assertFalse(Path(output + ".active").exists())
+                self.assertEqual(unrelated.read_text(), "keep this recording")
+
+    def test_failed_retry_keeps_old_completed_bag_and_rewrites_partial_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "run.bag"
+            active = Path(directory) / "run.bag.active"
+            output.write_text("old completed recording")
+            active.write_text("old unfinished recording")
+            with self.assertRaises(OSError):
+                self.run_with_fake_ros(directory, flush_failure=True)
+            self.assertEqual(output.read_text(), "old completed recording")
+            self.assertIn("/odom", active.read_text())
+            self.assertNotIn("old unfinished recording", active.read_text())
+
+
+class RecordingNumberTests(unittest.TestCase):
+    def load_number_function(self, excel_ids=()):
+        tree = ast.parse((SIM_DIR / "distancetime.py").read_text())
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                        and node.name == "get_next_rosbag_number")
+        workbook = Mock()
+        workbook.active.iter_rows.return_value = ((value,) for value in excel_ids)
+        loader = Mock(return_value=workbook)
+        namespace = {"os": os, "load_workbook": loader}
+        exec(compile(ast.Module(body=[function], type_ignores=[]),
+                     "distancetime.py", "exec"), namespace)
+        return namespace["get_next_rosbag_number"], loader
+
+    def test_no_excel_reuses_one_despite_existing_recordings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for name in ("rosbag1.bag", "rosbag4.bag.active", "rosbag99.bag.backup"):
+                (Path(directory) / name).write_text("preserve me")
+            get_number, loader = self.load_number_function()
+            self.assertEqual(get_number(str(Path(directory) / "missing.xlsx")), 1)
+            loader.assert_not_called()
+            self.assertEqual((Path(directory) / "rosbag1.bag").read_text(), "preserve me")
+
+    def test_only_excel_determines_number_even_if_disk_has_larger_ids(self):
+        for disk_number in (4, 11, 20):
+            with self.subTest(disk_number=disk_number), tempfile.TemporaryDirectory() as directory:
+                excel = Path(directory) / "data.xlsx"
+                excel.touch()
+                (Path(directory) / ("rosbag%d.bag.active" % disk_number)).touch()
+                get_number, loader = self.load_number_function((10, None, "invalid", 2))
+                self.assertEqual(get_number(str(excel)), 11)
+                loader.return_value.close.assert_called_once()
+
+    def test_empty_inputs_start_at_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            get_number, loader = self.load_number_function()
+            self.assertEqual(get_number(str(Path(directory) / "missing.xlsx")), 1)
+            loader.assert_not_called()
+
 
 def load_helpers():
     parsed = ast.parse((SIM_DIR / "distancetime.py").read_text())
@@ -320,7 +409,7 @@ def load_helpers():
     body = [node for node in parsed.body if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {
         "math": math, "os": Mock(), "rospy": Mock(), "Twist": twist,
-        "RecorderSession": Mock(), "get_next_rosbag_number": lambda: 7,
+        "RecorderSession": Mock(), "get_next_rosbag_number": lambda **_: 7,
         "_rosbag_recorder": None,
     }
     namespace["os"].path.expanduser.return_value = "/mock/rosbag"

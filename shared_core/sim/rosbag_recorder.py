@@ -105,6 +105,7 @@ class RecorderSession:
     def __init__(self, output_file, **settings):
         self.config = dict(settings, output_file=str(output_file), run_id=uuid.uuid4().hex)
         self.process = None
+        self.opened = False
         self.ready = False
         self.events = queue.Queue()
         self.last_status = {"waiting_for": list(settings["required_topics"])}
@@ -135,21 +136,32 @@ class RecorderSession:
 
     def _handle_event(self, event):
         self.last_status.update(event)
+        if event.get("event") in ("opened", "progress", "ready"):
+            self.opened = True
         if event.get("event") == "ready":
             self.ready = True
         elif event.get("event") == "error":
             self.error = event["message"]
 
-    def check(self):
+    def _drain_events(self):
         while True:
             try:
                 self._handle_event(self.events.get_nowait())
             except queue.Empty:
                 break
+
+    def check(self):
+        self._drain_events()
+        exit_code = self.process.poll()
+        if exit_code is not None:
+            # Read the final error event before falling back to an exit code.
+            if self.reader is not None:
+                self.reader.join(timeout=1.0)
+            self._drain_events()
         if self.error:
             raise RuntimeError("Rosbag recorder failed: " + self.error)
-        if self.process.poll() is not None:
-            raise RuntimeError("Rosbag recorder exited with status %s" % self.process.returncode)
+        if exit_code is not None:
+            raise RuntimeError("Rosbag recorder exited with status %s" % exit_code)
 
     def wait_until_ready(self, publish_stop, timeout, is_shutdown):
         deadline = time.monotonic() + timeout
@@ -187,8 +199,9 @@ class RecorderSession:
                     self.process.wait()
         if self.reader is not None:
             self.reader.join(timeout=1.0)
+        self._drain_events()
         self.process.stdout.close()
-        if self.process.returncode != 0:
+        if self.process.returncode != 0 and self.opened:
             raise RuntimeError("Recorder did not close cleanly; inspect %s.active"
                                % self.config["output_file"])
 
@@ -208,8 +221,6 @@ def run_recorder(config, emit):
 
     output_file = config["output_file"]
     active_file = output_file + ".active"
-    if os.path.exists(output_file) or os.path.exists(active_file):
-        raise RuntimeError("Recording already exists: " + output_file)
 
     messages = queue.Queue(maxsize=config.get("queue_size", 10000))
     callback_lock = threading.Lock()
@@ -237,7 +248,10 @@ def run_recorder(config, emit):
         subscribers.clear()
 
     try:
+        # Reuse this trial number, truncating an unfinished previous attempt.
+        # The completed .bag is replaced only after the new recording closes.
         bag = rosbag.Bag(active_file, "w")
+        emit("opened", active_file=active_file)
         writer = InitialRecordingWriter(
             bag, config["required_topics"], config.get("initial_position"),
             config["position_tolerance"], config["velocity_tolerance"],
