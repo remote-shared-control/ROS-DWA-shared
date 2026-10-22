@@ -619,9 +619,9 @@ def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], conf
     return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 
 def calc_obstacle_ttc(traj, moving_future, config) -> float:
-    """Return the first unsafe sample time, or predict_time if none is found.
+    """Return the first unsafe future sample time, or predict_time + 1 if safe.
 
-    Only the common time range of traj and moving_future is checked.
+    Skip the initial sample and check only the common future time range.
     Both predictions must start at t=0 and use the same config.dt.
     """
     predict_time = float(config.predict_time)
@@ -635,7 +635,7 @@ def calc_obstacle_ttc(traj, moving_future, config) -> float:
 
     safe_dist2 = (config.robot_radius + config.cube_half_size) ** 2
 
-    for i in range(num_steps):
+    for i in range(1, num_steps):
         dx = traj[i, 0] - moving_future[:, i, 0]
         dy = traj[i, 1] - moving_future[:, i, 1]
 

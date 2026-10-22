@@ -35,12 +35,20 @@ class ObstaclePredictionTests(unittest.TestCase):
         load_definitions("dwa_simwaffi_midpoint.py", {
             "Config", "motion_midpoint", "prepare_linear_motion",
             "calc_trajectory_midpoint_vw", "calc_obstacle_cost",
-            "calc_moving_obstacle_cost",
         }, self.namespace)
         load_definitions("detectmove.py", {"GazeboObsReader"}, self.namespace)
         self.config = self.namespace["Config"]()
         self.reader = object.__new__(self.namespace["GazeboObsReader"])
         self.reader.config = self.config
+        self.reader.moving_future = None
+        self.reader.obs_info = np.empty((0, 6))
+
+    def score(self, trajectory, obstacles=None):
+        if obstacles is None:
+            obstacles = (np.empty(0), np.empty(0))
+        return self.namespace["calc_obstacle_cost"](
+            trajectory, obstacles, self.config, self.reader
+        )
 
     def test_collision_at_seventh_point_is_rejected(self):
         self.reader.obs_info = np.array([[2.65, 0.0, -1.0, 0.0, 0.15, 0.0]])
@@ -52,77 +60,97 @@ class ObstaclePredictionTests(unittest.TestCase):
         self.assertEqual(self.reader.moving_future.shape, (1, 7, 2))
         np.testing.assert_allclose(self.reader.moving_future[0, -1], [0.25, 0.0])
 
-        score = self.namespace["calc_moving_obstacle_cost"]
-        self.assertEqual(
-            score(trajectory, self.reader.moving_future, self.reader.obs_info,
-                  self.config), float("-inf")
-        )
+        self.assertEqual(self.score(trajectory), float("-inf"))
         # Earlier samples are safe; the seventh point exposes the collision.
         self.reader.moving_future = self.reader.moving_future[:, :-1]
-        self.assertTrue(np.isfinite(
-            score(trajectory, self.reader.moving_future, self.reader.obs_info,
-                  self.config)
-        ))
+        self.assertTrue(np.isfinite(self.score(trajectory)))
 
     def test_static_clearance_is_normalized_and_rejects_contact(self):
         trajectory = np.zeros((3, 5))
-        score = self.namespace["calc_obstacle_cost"]
-        self.assertAlmostEqual(score(
-            trajectory, (np.array([0.71]), np.array([0.0])), self.config
-        ), 0.5)
-        self.assertEqual(score(
-            trajectory, (np.array([self.config.robot_radius]), np.array([0.0])),
-            self.config
+        self.assertAlmostEqual(self.score(
+            trajectory, (np.array([0.71]), np.array([0.0]))
+        ), (0.71 - self.config.robot_radius) / (
+            self.config.maxdect - self.config.robot_radius
+        ))
+        self.assertEqual(self.score(
+            trajectory, (np.array([self.config.robot_radius_static]), np.array([0.0]))
         ), float("-inf"))
-        self.assertEqual(score(
-            trajectory, (np.array([5.0]), np.array([0.0])), self.config
+        self.assertEqual(self.score(
+            trajectory, (np.array([5.0]), np.array([0.0]))
         ), 1.0)
 
     def test_moving_clearance_uses_matching_times_and_obstacle_radius(self):
         trajectory = np.zeros((3, 5))
         trajectory[:, 0] = [0.0, 1.0, 2.0]
-        future = np.array([[[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]])
-        obs_info = np.array([[1.0, 0.0, 1.0, 0.0, 0.15, 0.0]])
+        self.reader.moving_future = np.array([[[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]]])
+        self.reader.obs_info = np.array([[1.0, 0.0, 1.0, 0.0, 0.15, 0.0]])
         # Paths overlap spatially, but remain one metre apart at each instant.
-        self.assertAlmostEqual(self.namespace["calc_moving_obstacle_cost"](
-            trajectory, future, obs_info, self.config
-        ), (0.85 - 0.22) / (1.2 - 0.22))
+        self.assertAlmostEqual(self.score(trajectory), (
+            0.85 - self.config.robot_radius
+        ) / (self.config.maxdect - self.config.robot_radius))
 
     def test_moving_clearance_uses_each_obstacles_radius(self):
         trajectory = np.zeros((2, 5))
-        future = np.array([[[1.0, 0.0]] * 2, [[1.2, 0.0]] * 2])
-        obs_info = np.array([
+        self.reader.moving_future = np.array([[[1.0, 0.0]] * 2, [[1.2, 0.0]] * 2])
+        self.reader.obs_info = np.array([
             [1.0, 0.0, 0.0, 0.0, 0.1, 0.0],
             [1.2, 0.0, 0.0, 0.0, 0.6, 1.0],
         ])
-        self.assertAlmostEqual(self.namespace["calc_moving_obstacle_cost"](
-            trajectory, future, obs_info, self.config
-        ), (0.6 - 0.22) / (1.2 - 0.22))
+        self.assertAlmostEqual(self.score(trajectory), (
+            0.6 - self.config.robot_radius
+        ) / (self.config.maxdect - self.config.robot_radius))
 
-    def test_moving_contact_at_initial_sample_is_rejected(self):
+    def test_moving_initial_sample_does_not_affect_collision_or_score(self):
         self.config.robot_radius = 0.25
         trajectory = np.zeros((2, 5))
-        future = np.array([[[0.5, 0.0], [3.0, 0.0]]])
-        obs_info = np.array([[0.5, 0.0, 0.0, 0.0, 0.25, 0.0]])
-        self.assertEqual(self.namespace["calc_moving_obstacle_cost"](
-            trajectory, future, obs_info, self.config
-        ), float("-inf"))
+        self.reader.moving_future = np.array([[[0.5, 0.0], [1.0, 0.0]]])
+        self.reader.obs_info = np.array([[0.5, 0.0, 0.0, 0.0, 0.25, 0.0]])
+        expected = (0.75 - 0.25) / (self.config.maxdect - 0.25)
+        # Current contact must neither reject the path nor lower its score.
+        self.assertAlmostEqual(self.score(trajectory), expected)
+        self.reader.moving_future[0, 0, 0] = 0.85
+        self.assertAlmostEqual(self.score(trajectory), expected)
+        # The same contact at the first future sample must still be rejected.
+        self.reader.moving_future[0, 1, 0] = 0.5
+        self.assertEqual(self.score(trajectory), float("-inf"))
+
+    def test_static_initial_sample_is_also_skipped(self):
+        trajectory = np.zeros((2, 5))
+        trajectory[1, 0] = 3.0
+        self.assertEqual(self.score(
+            trajectory, (np.array([0.0]), np.array([0.0]))
+        ), 1.0)
+
+    def test_static_and_moving_distances_share_one_minimum(self):
+        trajectory = np.zeros((2, 5))
+        obstacles = (np.array([0.7]), np.array([0.0]))
+        self.reader.obs_info = np.array([[1.0, 0.0, 0.0, 0.0, 0.15, 0.0]])
+        self.reader.moving_future = np.array([[[1.0, 0.0], [1.0, 0.0]]])
+        denominator = self.config.maxdect - self.config.robot_radius
+        self.assertAlmostEqual(self.score(trajectory, obstacles), (
+            0.7 - self.config.robot_radius
+        ) / denominator)
+        self.reader.moving_future[0, 1, 0] = 0.75
+        self.assertAlmostEqual(self.score(trajectory, obstacles), (
+            0.6 - self.config.robot_radius
+        ) / denominator)
 
     def test_missing_or_longer_moving_prediction_is_handled(self):
         trajectory = np.zeros((2, 5))
-        score = self.namespace["calc_moving_obstacle_cost"]
-        for future in (None, np.empty((0, 1, 2)), np.empty((1, 0, 2))):
+        for future in (None, np.empty((0, 1, 2)), np.empty((1, 0, 2)),
+                       np.zeros((1, 1, 2))):
             with self.subTest(future=future):
-                self.assertEqual(score(
-                    trajectory, future, np.empty((0, 6)), self.config
-                ), 1.0)
-        self.assertEqual(self.namespace["calc_obstacle_cost"](
-            trajectory, (np.empty(0), np.empty(0)), self.config
-        ), 1.0)
+                self.reader.moving_future = future
+                self.assertEqual(self.score(trajectory), 1.0)
+                # Missing future samples must not skip static obstacles.
+                self.assertEqual(self.score(trajectory, (
+                    np.array([self.config.robot_radius_static]), np.array([0.0])
+                )), float("-inf"))
         # The extra obstacle sample lies beyond the robot prediction horizon.
-        future = np.array([[[3.0, 0.0], [3.0, 0.0], [0.0, 0.0]]])
-        obs_info = np.array([[3.0, 0.0, 0.0, 0.0, 0.15, 0.0]])
-        self.assertEqual(score(trajectory, future, obs_info, self.config), 1.0)
+        self.reader.moving_future = np.array([[[3.0, 0.0], [3.0, 0.0], [0.0, 0.0]]])
+        self.reader.obs_info = np.array([[3.0, 0.0, 0.0, 0.0, 0.15, 0.0]])
+        self.assertEqual(self.score(trajectory), 1.0)
+        self.assertEqual(self.score(trajectory[:1]), 1.0)
 
     def test_legacy_controller_keeps_uniform_time_alignment(self):
         namespace = self.namespace.copy()
@@ -145,6 +173,28 @@ class ObstaclePredictionTests(unittest.TestCase):
         self.assertTrue(np.isfinite(namespace["calc_obstacle_cost"](
             trajectory, (np.empty(0), np.empty(0)), config, self.reader
         )))
+
+    def test_dttc_skips_initial_contact_and_keeps_future_collision_times(self):
+        namespace = self.namespace.copy()
+        load_definitions("dwa_simwaffi_new_midpoint_dttc.py", {
+            "Config", "calc_obstacle_ttc",
+        }, namespace)
+        config = namespace["Config"]()
+        score = namespace["calc_obstacle_ttc"]
+        trajectory = np.zeros((3, 5))
+        future = np.array([[[0.0, 0.0], [3.0, 0.0], [3.0, 0.0]]])
+
+        # Only current contact exists: there is no unsafe future sample.
+        self.assertEqual(score(trajectory, future, config), config.predict_time + 1.0)
+        self.assertEqual(score(
+            trajectory[:1], future[:, :1], config
+        ), config.predict_time + 1.0)
+
+        future[0, 1] = [0.0, 0.0]
+        self.assertEqual(score(trajectory, future, config), config.trajectory_times[1])
+        future[0, 1] = [3.0, 0.0]
+        future[0, 2] = [0.0, 0.0]
+        self.assertEqual(score(trajectory, future, config), config.trajectory_times[2])
 
     def test_dttc_controller_detects_collision_at_its_own_endpoint(self):
         namespace = self.namespace.copy()

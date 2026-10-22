@@ -53,7 +53,7 @@ if RECORDER:
     log_writer.writerow([
         "TIME", "v", "w",
         "to_human_cost", "speed_cost",
-        "ob_cost", "ob_movecost", "final_cost"
+        "ob_cost", "final_cost"
     ])
     print("✅ CSV logging enabled")
 else:
@@ -121,7 +121,6 @@ class Config():
         self.to_human_cost_gain = 1.0 #lower = detour
         self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
-        self.move_obs_gain = 1.0
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
         #     self.speed_cost_gain = 1.0 #lower = faster
@@ -523,19 +522,12 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
 
             speed_cost = config.speed_cost_gain *(1-abs(human.linear.x - v)/(config.max_speed-config.min_speed))
 
-            ob_cost = calc_obstacle_cost(traj, ob, config) * config.obs_cost_gain
+            ob_cost = calc_obstacle_cost(traj, ob, config, readob) * config.obs_cost_gain
 
             if np.isinf(ob_cost):
                 continue
 
-            ob_movecost = calc_moving_obstacle_cost(
-                traj, readob.moving_future, readob.obs_info, config
-            ) * config.move_obs_gain
-
-            if np.isinf(ob_movecost):
-                continue
-            
-            final_cost = to_human_cost + speed_cost + ob_cost + ob_movecost
+            final_cost = to_human_cost + speed_cost + ob_cost
             # if log_writer and RECORDER is not None:
             #     log_writer.writerow([
             #         round(step, 3),                   # ← 第几次 while
@@ -544,7 +536,6 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
             #         to_human_cost,
             #         speed_cost,
             #         ob_cost,
-            #         ob_movecost,
             #         final_cost
             #     ])
 
@@ -561,42 +552,38 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
 #################################################################################
 
 
-# Static obstacle score: -inf for collision, otherwise normalized clearance.
-def calc_obstacle_cost(traj, ob, config):
+# Unified obstacle score: use the minimum distance after the current sample.
+def calc_obstacle_cost(traj, ob, config, readob):
+    if len(traj) <= 1:
+        return 1.0
+
+    minr = config.maxdect
     ox_arr, oy_arr = ob
 
-    if ox_arr.size == 0 or oy_arr.size == 0 or len(traj) <= 1:
-        return 1.0
+    if ox_arr.size > 0 and oy_arr.size > 0:
+        tx = traj[1:, 0:1]
+        ty = traj[1:, 1:2]
+        dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2
 
-    tx = traj[1:, 0:1]
-    ty = traj[1:, 1:2]
-    dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2
+        if np.any(dist2 <= config.robot_radius_static**2):
+            return float("-Inf")
 
-    if np.any(dist2 <= config.robot_radius_static**2):
-        return float("-Inf")
+        minr = min(minr, np.sqrt(dist2.min()))
 
-    minr = min(np.sqrt(dist2.min()), config.maxdect)
-    return (minr - config.robot_radius_static) / (config.maxdect - config.robot_radius_static)
+    moving_future = readob.moving_future
+    if moving_future is not None and moving_future.size > 0:
+        # Skip t=0 in both predictions and keep the remaining samples aligned.
+        num_steps = min(len(traj), moving_future.shape[1])
+        if num_steps > 1:
+            dx = traj[None, 1:num_steps, 0] - moving_future[:, 1:num_steps, 0]
+            dy = traj[None, 1:num_steps, 1] - moving_future[:, 1:num_steps, 1]
+            distances = np.hypot(dx, dy) - readob.obs_info[:, 4:5]
 
+            if np.any(distances <= config.robot_radius):
+                return float("-Inf")
 
-def calc_moving_obstacle_cost(traj, moving_future, obs_info, config):
-    """Score synchronized moving-obstacle clearance, including the t=0 sample."""
-    if moving_future is None or moving_future.size == 0:
-        return 1.0
+            minr = min(minr, distances.min())
 
-    # Both predictions share sampling times; check only their common range.
-    num_steps = min(len(traj), moving_future.shape[1])
-    if num_steps == 0:
-        return 1.0
-
-    dx = traj[None, :num_steps, 0] - moving_future[:, :num_steps, 0]
-    dy = traj[None, :num_steps, 1] - moving_future[:, :num_steps, 1]
-    distances = np.hypot(dx, dy) - obs_info[:, 4:5]
-
-    if np.any(distances <= config.robot_radius):
-        return float("-Inf")
-
-    minr = min(distances.min(), config.maxdect)
     return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 
 ############################################################################
