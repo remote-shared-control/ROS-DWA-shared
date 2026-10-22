@@ -647,7 +647,6 @@ def main():
     if RECORDER==True:
         runtime_state.rosbag_id = start_rosbag(
             cmd_vel_pub=pub, initial_position=target_position,
-            require_obstacles=True,
         )
     #     print("You can press y to stop and save rosbag when you need.")
     start_time = rospy.get_time()

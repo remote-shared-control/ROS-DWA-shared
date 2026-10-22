@@ -393,7 +393,10 @@ def get_next_rosbag_number(excel_path="/home/pc/result/data.xlsx"):
     return last_num + 1
 
 def start_rosbag(cmd_vel_pub=None, initial_position=None, require_obstacles=False):
-    """Hold still until this recorder has written and flushed its initial data."""
+    """Hold still until the initial /odom has been written and flushed.
+
+    require_obstacles is ignored for compatibility with older controllers.
+    """
     global _rosbag_recorder
     if _rosbag_recorder is not None:
         raise RuntimeError("A rosbag recording is already running")
@@ -412,9 +415,7 @@ def start_rosbag(cmd_vel_pub=None, initial_position=None, require_obstacles=Fals
                                                 for value in initial_position[:2]):
             raise ValueError("Rosbag initial position must contain finite x and y coordinates")
         initial_position = [float(value) for value in initial_position[:2]]
-    required_topics = ["/odom", "/cmd_vel"]
-    if rospy.get_param("~rosbag_require_obstacles", require_obstacles):
-        required_topics.append("/dynamic_obstacle_states")
+    required_topics = ["/odom"]
     if cmd_vel_pub is None:
         cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
 

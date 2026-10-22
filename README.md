@@ -48,15 +48,15 @@ export TURTLEBOT3_MODEL=burger
 All nine `shared_core/sim/dwa*.py` controllers use a recording handshake when
 their existing `RECORDER` switch is enabled. The controller publishes zero
 velocity at 20 Hz while a separate Python recorder starts. The recorder first
-writes a fresh, stationary `/odom` sample at the script's initial x/y position,
-then a zero `/cmd_vel`. Dynamic controllers also wait for the first
-`/dynamic_obstacle_states` sample; static controllers do not require it.
-`/cmd_vel_human` is recorded when available and never blocks startup.
+writes a fresh, stationary `/odom` sample at the script's initial x/y position.
+This is the only topic required for startup. `/cmd_vel`, `/cmd_vel_human` and
+`/dynamic_obstacle_states` are also subscribed and recorded whenever messages
+arrive, but never block startup.
 
-The recorder flushes this initial data before acknowledging readiness through
+The recorder flushes the initial `/odom` before acknowledging readiness through
 its own process pipe. Only then does the controller start its experiment timer
 and publish motion commands. There is no fixed 0.8-second startup sleep.
-Missing topics, an incorrect initial pose, or a write failure abort startup;
+A missing `/odom`, an incorrect initial pose, or a write failure aborts startup;
 an active recorder failure also stops the controller's velocity output.
 
 Bag numbering uses the largest ID in `/home/pc/result/data.xlsx`, then adds
@@ -77,7 +77,6 @@ Private ROS parameters:
 | `~rosbag_position_tolerance` | `0.02` m | Allowed x/y distance from the initial position |
 | `~rosbag_velocity_tolerance` | `0.02` | Allowed initial linear/angular velocity components, in m/s and rad/s |
 | `~rosbag_initial_position` | Script's initial x/y | Expected position **in the `/odom` frame**; override if Gazebo world and odometry origins differ |
-| `~rosbag_require_obstacles` | Dynamic: `true`; static: `false` | Whether obstacle data must be written before motion |
 
 The TurtleBot variants use their configured `(0, 1.5)` initial position.
 For example, with `RECORDER` enabled:

@@ -106,6 +106,16 @@ class WriterTests(unittest.TestCase):
         self.assertFalse(writer.write("/odom", odom(), stamp()))
         self.assertTrue(writer.write("/odom", odom(y=1.5), stamp()))
 
+    def test_odom_alone_is_enough_after_successful_write_and_flush(self):
+        writer = recorder.InitialRecordingWriter(Mock(), ["/odom"], [0.0, 0.0])
+        writer.bag.write.side_effect = lambda *a, **k: self.assertFalse(writer.ready)
+        writer.bag.flush.side_effect = lambda: self.assertFalse(writer.ready)
+        self.assertTrue(writer.write("/odom", odom(x=0.002, y=0.002), stamp()))
+        writer.bag.write.assert_called_once()
+        writer.bag.flush.assert_called_once()
+        self.assertEqual(writer.status()["written_topics"], ["/odom"])
+        self.assertEqual(writer.status()["waiting_for"], [])
+
     def test_position_within_one_centimetre_passes_initial_pose_check(self):
         writer = self.make_writer()
         writer.write("/odom", odom(x=0.006, y=0.006), stamp())
@@ -242,7 +252,7 @@ os.replace(active, config['output_file'])
 
 class RecorderLifecycleTests(unittest.TestCase):
     def run_with_fake_ros(self, directory, flush_failure=False, queue_size=10000,
-                          stop_before_initial=False):
+                          stop_before_initial=False, odom_only=False):
         output = str(Path(directory) / "run.bag")
         handlers, callbacks, events = {}, {}, []
 
@@ -269,6 +279,9 @@ class RecorderLifecycleTests(unittest.TestCase):
             if len(callbacks) == 4:
                 if stop_before_initial:
                     callbacks["/odom"](odom(x=1.0))
+                    return Mock()
+                if odom_only:
+                    callbacks["/odom"](odom())
                     return Mock()
                 callbacks["/cmd_vel"](twist())
                 callbacks["/odom"](odom(x=1.0))  # Stale reset pose is not recorded.
@@ -299,7 +312,7 @@ class RecorderLifecycleTests(unittest.TestCase):
         }
         config = {
             "output_file": output, "run_id": "test-run",
-            "required_topics": ["/odom", "/cmd_vel", "/dynamic_obstacle_states"],
+            "required_topics": ["/odom"],
             "initial_position": [0, 0], "position_tolerance": 0.02,
             "velocity_tolerance": 0.02, "minimum_odom_stamp": 9.0,
             "queue_size": queue_size,
@@ -318,6 +331,16 @@ class RecorderLifecycleTests(unittest.TestCase):
                 "/odom", "/cmd_vel", "/dynamic_obstacle_states", "/cmd_vel",
             ])
             self.assertFalse(Path(output + ".active").exists())
+
+    def test_no_obstacle_or_initial_cmd_vel_messages_do_not_block_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output, events = self.run_with_fake_ros(directory, odom_only=True)
+            self.assertLess(events.index(("write", "/odom")), events.index(("flush",)))
+            self.assertLess(events.index(("flush",)), events.index(("ready",)))
+            # Motion is injected by the fixture only AFTER receiving ready.
+            self.assertLess(events.index(("ready",)), events.index(("write", "/cmd_vel")))
+            self.assertEqual(Path(output).read_text().splitlines(), ["/odom", "/cmd_vel"])
+            self.assertNotIn(("write", "/dynamic_obstacle_states"), events)
 
     def test_disk_error_and_overflow_keep_partial_file_and_never_finalize(self):
         for settings, error in (({"flush_failure": True}, OSError),
@@ -430,8 +453,10 @@ class ControllerBoundaryTests(unittest.TestCase):
         self.assertEqual(namespace["start_rosbag"](publisher, [0, 1.5, 0], True), 7)
         settings = namespace["RecorderSession"].call_args.kwargs
         self.assertEqual(settings["initial_position"], [0.0, 1.5])
-        self.assertIn("/dynamic_obstacle_states", settings["required_topics"])
-        self.assertNotIn("/cmd_vel_human", settings["required_topics"])
+        # The legacy True argument above must not restore obstacle gating.
+        self.assertEqual(settings["required_topics"], ["/odom"])
+        self.assertNotIn("~rosbag_require_obstacles",
+                         [call.args[0] for call in namespace["rospy"].get_param.call_args_list])
         session = namespace["RecorderSession"].return_value
         session.wait_until_ready.call_args.args[0]()
         self.assertTrue(all(recorder.twist_is_zero(call.args[0], 0)
@@ -487,8 +512,7 @@ class ControllerBoundaryTests(unittest.TestCase):
                 keywords = {kw.arg: kw.value for kw in start.keywords}
                 self.assertEqual(keywords["cmd_vel_pub"].id, "pub")
                 self.assertEqual(keywords["initial_position"].id, "target_position")
-                self.assertEqual(keywords["require_obstacles"].value,
-                                 not path.name.startswith("dwa_static"))
+                self.assertNotIn("require_obstacles", keywords)
                 timer = next(node for node in ast.walk(main) if isinstance(node, ast.Assign)
                              and any(isinstance(target, ast.Name) and target.id == "start_time"
                                      for target in node.targets))
