@@ -204,16 +204,28 @@ class ObstaclePredictionTests(unittest.TestCase):
         }, namespace)
         config = namespace["Config"]()
         self.reader.config = config
-        obs_info = np.array([[4.2, 0.0, -1.0, 0.0, config.obs_radius, 0.0]])
+        times = config.trajectory_times
+        self.assertEqual(times[-1], config.predict_time)
+        safe_distance = config.robot_radius + config.cube_half_size
+        # Approach at 1 m/s: enter the collision radius between the final
+        # two samples, regardless of the configured prediction horizon.
+        overlap = min(safe_distance / 2.0, (times[-1] - times[-2]) / 2.0)
+        initial_x = config.predict_time + safe_distance - overlap
+        obs_info = np.array([[initial_x, 0.0, -1.0, 0.0, config.obs_radius, 0.0]])
         future = self.reader.predict_future(obs_info)
         trajectory = namespace["calc_trajectory_midpoint_vw"](
             np.zeros(5), 0.0, 0.0, config
         )
-        self.assertEqual(trajectory.shape[0], 11)
-        self.assertEqual(future.shape, (1, 11, 2))
+        self.assertEqual(trajectory.shape[0], len(times))
+        self.assertEqual(future.shape, (1, len(times), 2))
+        np.testing.assert_allclose(future[0, :, 0], initial_x - np.asarray(times))
+        # All earlier samples are safe; the final sample must expose the hit.
+        self.assertEqual(namespace["calc_obstacle_ttc"](
+            trajectory[:-1], future[:, :-1], config
+        ), config.predict_time + 1.0)
         self.assertEqual(namespace["calc_obstacle_ttc"](
             trajectory, future, config
-        ), 4.0)
+        ), config.predict_time)
 
 
 if __name__ == "__main__":

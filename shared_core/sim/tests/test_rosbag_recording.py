@@ -129,7 +129,7 @@ class CoordinateTests(unittest.TestCase):
 
     def test_every_dwa_odom_callback_collects_coordinates_and_distance(self):
         scripts = sorted(SIM_DIR.glob("dwa*.py"))
-        self.assertEqual(len(scripts), 9)
+        self.assertEqual(len(scripts), 10)
         for path in scripts:
             with self.subTest(script=path.name):
                 namespace = load_helpers()

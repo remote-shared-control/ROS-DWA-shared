@@ -98,7 +98,7 @@ def run_selection(namespace, config, vs, ws):
 
 class TrajectoryPreviewTests(unittest.TestCase):
     def controllers(self):
-        self.assertEqual(len(CONTROLLERS), 10)
+        self.assertEqual(len(CONTROLLERS), 11)
         for path in CONTROLLERS:
             namespace, config = load_controller(path.read_text(encoding="utf-8"), str(path))
             yield path, namespace, config

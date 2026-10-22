@@ -45,7 +45,7 @@ export TURTLEBOT3_MODEL=burger
 
 ## Simulation recording and trial results
 
-All nine `shared_core/sim/dwa*.py` controllers start the standard
+All `shared_core/sim/dwa*.py` controllers start the standard
 `rosbag record -O` command directly when `RECORDER` is enabled. The controller
 continues immediately after launching it; there is no recording-readiness
 handshake, topic/pose/velocity check, or additional startup sleep. Velocity
@@ -82,7 +82,7 @@ in C/D. Existing result rows are preserved when appending new trials.
 The timer starts immediately after launching rosbag. Duration and distance
 are captured before saving files and waiting for rosbag to close.
 
-All nine simulation DWA scripts have independent `RECORDER` (rosbag/results)
+All simulation DWA scripts have independent `RECORDER` (rosbag/results)
 and `RECORDER_CSV` (CSV) switches. CSV initialization always defines `log_file`
 and `log_writer`, setting both to `None` when disabled. Existing enabled/disabled
 states are preserved. CSV currently writes its header; the per-candidate cost
@@ -95,6 +95,39 @@ python3 -m unittest discover -s shared_core/sim/tests -p 'test_rosbag_recording.
 ```
 
 The Excel tests require `openpyxl`; the other tests do not require ROS.
+
+## Midpoint transition followed by equation-based TTC
+
+`shared_core/sim/dwa_simwaffi_new_midpoint_hybrid.py` is a separate controller
+based on `dwa_simwaffi_new_midpoint.py`. It uses the new
+`shared_core/sim/cal_ctime_midpoint.py` TTC solver. Run it in the existing ROS
+simulation environment from the repository root:
+
+```bash
+python3 shared_core/sim/dwa_simwaffi_new_midpoint_hybrid.py
+```
+
+For each candidate `(v, w)`, reuse `t_v = abs(v-v0)/max_accel` and
+`t_w = abs(w-w0)/max_dyawrate`; both velocities are constant at
+`t_constant = max(t_v, t_w)`. Retain all midpoint-vw substep states through
+that exact instant, including the internal velocity-switch states. Check
+each consecutive segment against the translating, already inflated obstacle
+rectangles and return the first collision time immediately. Collision times
+within a substep use linear interpolation of its midpoint-generated positions.
+
+If the transition is collision-free, advance each rectangle by its velocity
+times `t_constant`, determine the rotation center from the robot's switch
+pose, and transform the rectangle edges into the local coordinate frames.
+Solve the boundary equations over `predict_time - t_constant` and add
+`t_constant` to the earliest valid root. Straight-line and stationary-center
+motion use relative linear intersection. The obstacle model retains constant
+translation and fixed orientation. Contact counts as collision.
+
+If the dynamic horizon ends during acceleration, check only the transition
+through that horizon. No collision returns `predict_time`, as in the original
+controller. Static-obstacle evaluation and RViz retain the existing midpoint
+trajectory and static prediction horizon. The two original programs are
+unchanged.
 
 ## LIMO simulation: repeated wheel TF timestamps
 
