@@ -551,7 +551,7 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
     max_cost = 0.0
     best_traj = None
     max_u = u
-    max_u[0] = -config.human.linear.x #no way can be chosen
+    max_u[0] = 0.0 #no way can be chosen
     max_u[1] = config.human.angular.z
     # evaluate all trajectory with sampled input in dynamic window
     for v in vs:
@@ -611,13 +611,14 @@ def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], conf
 
     dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2   # (T, N)
 
-    if np.any(dist2 <= config.robot_radius_static**2):
+
+    if np.any(dist2 <= config.robot_radius**2):
         return float("-Inf")
 
     # 截断：超过 maxdect 的距离不参与计算，等价于原来 minr = config.maxdect 的初始值
     minr = min(np.sqrt(dist2.min()), config.maxdect)
 
-    return (minr - config.robot_radius_static) / (config.maxdect - config.robot_radius_static)
+    return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 
 def calc_obstacle_ttc(traj, moving_future, config) -> float:
     """Return the first unsafe future sample time, or predict_time + 1 if safe.

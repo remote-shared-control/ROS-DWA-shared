@@ -565,7 +565,7 @@ def calc_obstacle_cost(traj, ob, config, readob):
         ty = traj[1:, 1:2]
         dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2
 
-        if np.any(dist2 <= config.robot_radius_static**2):
+        if np.any(dist2 <= config.robot_radius**2):
             return float("-Inf")
 
         minr = min(minr, np.sqrt(dist2.min()))
