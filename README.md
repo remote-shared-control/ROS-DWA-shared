@@ -75,7 +75,7 @@ Private ROS parameters:
 | --- | --- | --- |
 | `~rosbag_ready_timeout` | `5.0` s | Maximum time to wait for written initial data |
 | `~rosbag_position_tolerance` | `0.02` m | Allowed x/y distance from the initial position |
-| `~rosbag_velocity_tolerance` | `0.02` | Allowed initial linear/angular velocity components, in m/s and rad/s |
+| `~rosbag_velocity_tolerance` | `0.02` | Maximum absolute initial `linear.x` (m/s) and `angular.z` (rad/s); other velocity components are ignored |
 | `~rosbag_initial_position` | Script's initial x/y | Expected position **in the `/odom` frame**; override if Gazebo world and odometry origins differ |
 
 The TurtleBot variants use their configured `(0, 1.5)` initial position.

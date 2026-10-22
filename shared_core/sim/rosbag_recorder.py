@@ -22,9 +22,8 @@ STATUS_PREFIX = "ROSBAG_STATUS "
 
 
 def twist_is_zero(twist, tolerance):
-    values = [getattr(vector, axis)
-              for vector in (twist.linear, twist.angular)
-              for axis in ("x", "y", "z")]
+    """Check only the robot's forward speed and yaw rate."""
+    values = (twist.linear.x, twist.angular.z)
     return all(math.isfinite(value) and abs(value) <= tolerance
                for value in values)
 

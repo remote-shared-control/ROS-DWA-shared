@@ -116,6 +116,31 @@ class WriterTests(unittest.TestCase):
         self.assertEqual(writer.status()["written_topics"], ["/odom"])
         self.assertEqual(writer.status()["waiting_for"], [])
 
+    def test_odom_ignores_other_velocity_components(self):
+        writer = recorder.InitialRecordingWriter(Mock(), ["/odom"], [0.0, 0.0])
+        msg = odom(v=0.01)
+        velocity = msg.twist.twist
+        velocity.angular.z = -0.01
+        velocity.linear.y = 100.0
+        velocity.linear.z = -100.0
+        velocity.angular.x = float("nan")
+        velocity.angular.y = float("inf")
+        self.assertTrue(writer.write("/odom", msg, stamp()))
+        writer.bag.flush.assert_called_once()
+
+    def test_odom_checks_absolute_linear_x_and_angular_z_limits(self):
+        values = (0.02, -0.02, 0.020001, -0.020001, float("nan"), float("inf"))
+        for vector, axis in (("linear", "x"), ("angular", "z")):
+            for value in values:
+                with self.subTest(component=(vector, axis), value=value):
+                    writer = recorder.InitialRecordingWriter(Mock(), ["/odom"], [0.0, 0.0])
+                    msg = odom()
+                    setattr(getattr(msg.twist.twist, vector), axis, value)
+                    accepted = math.isfinite(value) and abs(value) <= 0.02
+                    self.assertEqual(writer.write("/odom", msg, stamp()), accepted)
+                    if not accepted:
+                        writer.bag.write.assert_not_called()
+
     def test_position_within_one_centimetre_passes_initial_pose_check(self):
         writer = self.make_writer()
         writer.write("/odom", odom(x=0.006, y=0.006), stamp())
