@@ -772,7 +772,6 @@ def main():
     # position of obstacles
     # obs = Obstacles()
     cube=CubeReader(config)
-    counter = StringMessageCounter()
     # if chizu=="4":
     #     config.robot_radius=0.106
     #     obs.pattern=1
@@ -785,6 +784,7 @@ def main():
     target_position = [0.0, 0.0, 0.148]  # x, y, z
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
+    counter = StringMessageCounter()
 
     
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)

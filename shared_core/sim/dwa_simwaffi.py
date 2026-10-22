@@ -617,9 +617,9 @@ def main():
     target_position = [0.0, 0.0, 0.148]  # x, y, z
     target_orientation = [0.0, 0.0, 0.0,  0.0]  # x, y, z, w
     set_robot_position(model_name, target_position, target_orientation)
+    counter = StringMessageCounter()
 
     threading.Thread(target=listen_key, daemon=True).start()
-    counter = StringMessageCounter()
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
