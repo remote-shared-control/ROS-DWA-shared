@@ -13,9 +13,9 @@ import numpy as np
 from gazebo_msgs.srv import SetModelState
 from gazebo_msgs.msg import ModelState
 from sensor_msgs.msg import JoyFeedbackArray,JoyFeedback
-import subprocess
 import time,csv
 from geometry_msgs.msg import Twist, Point
+from rosbag_recorder import RecorderSession
 
 
 markers = Marker()
@@ -351,7 +351,7 @@ def set_robot_position(model_name, position, orientation):
         cmd_vel_pub.publish(stop_cmd)
         rate.sleep()
 
-rosbag_process = None
+_rosbag_recorder = None
 import pandas as pd
 
 def read_last_value_from_column():
@@ -402,83 +402,84 @@ def get_next_rosbag_number(excel_path="/home/pc/result/data.xlsx"):
 
     return last_num + 1
 
-import rosnode
-def start_rosbag():
-    """
-    根据Excel A列编号自动生成新的rosbag编号，
-    并等待rosbag节点真正启动后再返回。
-    """
+def start_rosbag(cmd_vel_pub=None, initial_position=None, require_obstacles=False):
+    """Hold still until this recorder has written and flushed its initial data."""
+    global _rosbag_recorder
+    if _rosbag_recorder is not None:
+        raise RuntimeError("A rosbag recording is already running")
 
-    record_topics = [
-        "/cmd_vel",
-        "/cmd_vel_human",
-        "/odom",
-        "/dynamic_obstacle_states"
-    ]
+    timeout = float(rospy.get_param("~rosbag_ready_timeout", 5.0))
+    position_tolerance = float(rospy.get_param("~rosbag_position_tolerance", 0.02))
+    velocity_tolerance = float(rospy.get_param("~rosbag_velocity_tolerance", 0.02))
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("~rosbag_ready_timeout must be positive and finite")
+    if any(not math.isfinite(value) or value < 0
+           for value in (position_tolerance, velocity_tolerance)):
+        raise ValueError("Rosbag position and velocity tolerances must be nonnegative and finite")
+    initial_position = rospy.get_param("~rosbag_initial_position", initial_position)
+    if initial_position is not None:
+        if len(initial_position) < 2 or not all(math.isfinite(float(value))
+                                                for value in initial_position[:2]):
+            raise ValueError("Rosbag initial position must contain finite x and y coordinates")
+        initial_position = [float(value) for value in initial_position[:2]]
+    required_topics = ["/odom", "/cmd_vel"]
+    if rospy.get_param("~rosbag_require_obstacles", require_obstacles):
+        required_topics.append("/dynamic_obstacle_states")
+    if cmd_vel_pub is None:
+        cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
 
+    stop_cmd = Twist()
+    cmd_vel_pub.publish(stop_cmd)
     rosbag_dir = os.path.expanduser("~/rosbag")
     os.makedirs(rosbag_dir, exist_ok=True)
-
-    # 从Excel读取编号
     count = get_next_rosbag_number()
-
-    output_file = os.path.join(rosbag_dir, f"rosbag{count}")
-
-    global rosbag_process
-
-    cmd = ["rosbag", "record", "-O", output_file]
-    cmd.extend(record_topics)
-
-    print(f"Starting rosbag recording: {' '.join(cmd)}")
-
-    rosbag_process = subprocess.Popen(cmd)
-
-    # -------------------------------
-    # 等待rosbag节点启动
-    # -------------------------------
-    timeout = 5.0      # 最长等待5秒
-    interval = 0.05    # 每50ms检测一次
-
-    start = time.time()
-
-    while True:
+    output_file = os.path.join(rosbag_dir, f"rosbag{count}.bag")
+    _rosbag_recorder = RecorderSession(
+        output_file, required_topics=required_topics,
+        initial_position=initial_position,
+        position_tolerance=position_tolerance,
+        velocity_tolerance=velocity_tolerance,
+        minimum_odom_stamp=rospy.Time.now().to_sec(),
+    )
+    rospy.on_shutdown(stop_rosbag)
+    print(f"Starting rosbag recording: {output_file}")
+    try:
+        _rosbag_recorder.start()
+        status = _rosbag_recorder.wait_until_ready(
+            lambda: cmd_vel_pub.publish(stop_cmd), timeout, rospy.is_shutdown,
+        )
+    except BaseException:
+        cmd_vel_pub.publish(stop_cmd)
         try:
-            nodes = rosnode.get_node_names()
-
-            # rosbag record节点一般以 /record 开头
-            record_nodes = [n for n in nodes if n.startswith("/record")]
-
-            if record_nodes:
-                print(f"Detected rosbag node: {record_nodes[0]}")
-                break
-
-        except Exception:
-            # rosnode查询失败，继续等待
-            pass
-
-        if time.time() - start > timeout:
-            print("Warning: Wait for rosbag node timeout!")
-            break
-
-        time.sleep(interval)
-    time.sleep(0.8)  # 再等待0.5秒，确保rosbag节点稳定
-    print(f"rosbag recording started -> rosbag{count}.bag")
-
+            stop_rosbag()
+        except Exception as exc:
+            rospy.logerr("Failed to close recorder: %s", exc)
+        raise
+    rospy.loginfo("Recording ready: %s; initial odom: %s",
+                  ", ".join(status["written_topics"]), status["last_odom"])
     return count
 
+
+def publish_cmd_vel(publisher, command):
+    """Stop the controller if its active recording fails after the handshake."""
+    if _rosbag_recorder is not None:
+        try:
+            _rosbag_recorder.check()
+        except RuntimeError:
+            publisher.publish(Twist())
+            raise
+    publisher.publish(command)
+
+
 def stop_rosbag():
-    """
-    停止 rosbag 记录。
-    """
-    global rosbag_process
-    if rosbag_process is not None:
+    """Drain queued messages, close the bag, and finish the recorder process."""
+    global _rosbag_recorder
+    recorder = _rosbag_recorder
+    _rosbag_recorder = None
+    if recorder is not None:
         print("Stopping rosbag recording...")
-        rosbag_process.terminate()  # 发送 SIGTERM 信号
-        rosbag_process.wait()       # 等待进程结束
-        rosbag_process = None
+        recorder.stop()
         print("rosbag recording stopped.")
-    else:
-        print("No rosbag recording process found.")
 
 def atGoal(config):
     # check at goal
@@ -527,6 +528,9 @@ def delete_rosbag(count):
         ~/rosbag/rosbag3.bag.active（如果存在）
     """
 
+    stop_rosbag()
+    if count is None:
+        return
     rosbag_dir = os.path.expanduser("~/rosbag")
 
     bag_file = os.path.join(rosbag_dir, f"rosbag{count}.bag")
@@ -546,5 +550,3 @@ def delete_rosbag(count):
 
     if not deleted:
         print(f"rosbag{count}.bag does not exist.")
-
-        

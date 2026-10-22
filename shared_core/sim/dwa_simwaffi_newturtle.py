@@ -553,7 +553,10 @@ def main():
     # initial linear and angular velocities
     u = np.array([0.0, 0.0])
     if RECORDER==True:
-        runtime_state.rosbag_id = start_rosbag()
+        runtime_state.rosbag_id = start_rosbag(
+            cmd_vel_pub=pub, initial_position=target_position,
+            require_obstacles=True,
+        )
     #     print("You can press y to stop and save rosbag when you need.")
     start_time = rospy.get_time()
     # runs until terminated externally
@@ -584,7 +587,7 @@ def main():
             speed.angular.z = config.human.angular.z
         # if runtime_state.result_pending:
         #     marker_pub.publish(markers)
-        pub.publish(speed)
+        publish_cmd_vel(pub, speed)
 
         if runtime_state.save_requested:
             if runtime_state.result_pending:
@@ -602,4 +605,7 @@ def main():
 
 if __name__ == '__main__':
     rospy.init_node('shared_dwa')
-    main()
+    try:
+        main()
+    finally:
+        stop_rosbag()

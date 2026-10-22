@@ -43,6 +43,56 @@ export TURTLEBOT3_MODEL=burger
 - Subscribed: `scan`, `cmd_vel_human`,`/filtered_scan`,`/odom`
 - Published: `/cmd_vel`,`line_list`,`line_list_human`
 
+## Simulation recording before motion
+
+All nine `shared_core/sim/dwa*.py` controllers use a recording handshake when
+their existing `RECORDER` switch is enabled. The controller publishes zero
+velocity at 20 Hz while a separate Python recorder starts. The recorder first
+writes a fresh, stationary `/odom` sample at the script's initial x/y position,
+then a zero `/cmd_vel`. Dynamic controllers also wait for the first
+`/dynamic_obstacle_states` sample; static controllers do not require it.
+`/cmd_vel_human` is recorded when available and never blocks startup.
+
+The recorder flushes this initial data before acknowledging readiness through
+its own process pipe. Only then does the controller start its experiment timer
+and publish motion commands. There is no fixed 0.8-second startup sleep.
+Missing topics, an incorrect initial pose, or a write failure abort startup;
+an active recorder failure also stops the controller's velocity output.
+
+Bag numbering still comes from `/home/pc/result/data.xlsx`, with output in
+`~/rosbag/rosbagN.bag`. While recording, the file has a `.bag.active` suffix.
+Stopping a ready recorder drains pending messages and closes the bag before renaming it.
+Existing recordings are not overwritten; failed recordings retain `.active`
+files for inspection. The recorder uses ROS time for message receipt stamps
+and wall time for its startup timeout, including when Gazebo is paused.
+
+Private ROS parameters:
+
+| Parameter | Default | Purpose |
+| --- | --- | --- |
+| `~rosbag_ready_timeout` | `5.0` s | Maximum time to wait for written initial data |
+| `~rosbag_position_tolerance` | `0.02` m | Allowed x/y distance from the initial position |
+| `~rosbag_velocity_tolerance` | `0.02` | Allowed initial linear/angular velocity components, in m/s and rad/s |
+| `~rosbag_initial_position` | Script's initial x/y | Expected position **in the `/odom` frame**; override if Gazebo world and odometry origins differ |
+| `~rosbag_require_obstacles` | Dynamic: `true`; static: `false` | Whether obstacle data must be written before motion |
+
+The TurtleBot variants use their configured `(0, 1.5)` initial position.
+For example, with `RECORDER` enabled:
+
+```bash
+rosrun shared_core dwa_simwaffi_midpoint.py _rosbag_ready_timeout:=10.0
+```
+
+Run the handshake, failure handling and shutdown tests without ROS:
+
+```bash
+python3 -m unittest discover -s shared_core/sim/tests -p 'test_rosbag_recording.py' -v
+```
+
+In Gazebo, verify that the saved bag's first `/odom` is at the expected initial
+pose and precedes its first nonzero `/cmd_vel`. The bag includes the short
+stationary preparation interval; the controller's experiment timer excludes it.
+
 ## LIMO simulation: repeated wheel TF timestamps
 
 If `dwa_simwaffi_new.py` prints `TF_REPEATED_DATA` for
