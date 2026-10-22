@@ -42,24 +42,25 @@ from lidar3d import *
 import csv
 
 
-RECORDER = True  # Set to True to enable CSV logging, False to disable
+RECORDER = True  # Enable rosbag recording.
+RECORDER_CSV = False  # Set to True to enable CSV logging, False to disable.
 
-# if RECORDER:
-#     log_dir = "/home/frienkie/rosbagpaper"
-#     os.makedirs(log_dir, exist_ok=True)
-#     log_path = os.path.join(log_dir, "vw_cost_log.csv")
-#     log_file = open(log_path, "w", newline="")
-#     log_writer = csv.writer(log_file)
-#     log_writer.writerow([
-#         "TIME", "v", "w",
-#         "to_human_cost", "speed_cost",
-#         "ob_cost", "final_cost"
-#     ])
-#     print("✅ CSV logging enabled")
-# else:
-#     log_writer = None
-#     log_file = None
-#     print("❌ CSV logging disabled")
+if RECORDER_CSV:
+    log_dir = "/home/frienkie/rosbagpaper"
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "vw_cost_log.csv")
+    log_file = open(log_path, "w", newline="")
+    log_writer = csv.writer(log_file)
+    log_writer.writerow([
+        "TIME", "v", "w",
+        "to_human_cost", "speed_cost",
+        "ob_cost", "final_cost"
+    ])
+    print("✅ CSV logging enabled")
+else:
+    log_writer = None
+    log_file = None
+    print("❌ CSV logging disabled")
 
 
 class RuntimeState:

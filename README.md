@@ -95,6 +95,12 @@ In Gazebo, verify that the saved bag's first `/odom` is at the expected initial
 pose and precedes its first nonzero `/cmd_vel`. The bag includes the short
 stationary preparation interval; the controller's experiment timer excludes it.
 
+All nine simulation DWA scripts have independent `RECORDER` (rosbag) and
+`RECORDER_CSV` (CSV) switches. CSV initialization always defines `log_file` and
+`log_writer`, setting both to `None` when disabled. Existing enabled/disabled
+states are preserved. CSV currently writes its header; the per-candidate cost
+row statements in the controllers remain commented out.
+
 ## LIMO simulation: repeated wheel TF timestamps
 
 If `dwa_simwaffi_new.py` prints `TF_REPEATED_DATA` for

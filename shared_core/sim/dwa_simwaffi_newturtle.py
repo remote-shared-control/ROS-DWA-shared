@@ -40,9 +40,10 @@ from lidar3d import *
 # args = parser.parse_args()
 import csv
 
-RECORDER = False
+RECORDER = False  # Enable rosbag recording.
+RECORDER_CSV = False  # Set to True to enable CSV logging, False to disable.
 
-if RECORDER:
+if RECORDER_CSV:
     log_dir = "/home/frienkie/rosbagpaper"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "new_cost_log.csv")
@@ -478,7 +479,7 @@ def line(num, target_marker, x_points, y_points):
 
 def signal_handler(signal, frame):
     print("\nCtrl + C  is pressed,exit sys")
-    if RECORDER==True:
+    if log_file is not None:
         log_file.close()
     sys.exit(0)  # 退出程序
 

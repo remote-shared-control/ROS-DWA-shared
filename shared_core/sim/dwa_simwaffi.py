@@ -41,9 +41,10 @@ from lidar3d import *
 import csv
 
 
-RECORDER = True  # Set to True to enable CSV logging, False to disable
+RECORDER = True  # Enable rosbag recording.
+RECORDER_CSV = True  # Enable CSV logging; preserve the previous enabled state.
 
-if RECORDER:
+if RECORDER_CSV:
     log_dir = "/home/frienkie/rosbagpaper"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "vw_cost_log.csv")

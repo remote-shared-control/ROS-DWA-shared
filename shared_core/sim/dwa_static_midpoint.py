@@ -42,7 +42,7 @@ from lidar3d import *
 # args = parser.parse_args()
 import csv
 
-RECORDER = True  # Set to True to enable CSV logging, False to disable
+RECORDER = True  # Enable rosbag recording.
 RECORDER_CSV = False  # Set to True to enable CSV logging, False to disable
 if RECORDER_CSV:
     log_dir = "/home/frienkie/rosbagpaper"
