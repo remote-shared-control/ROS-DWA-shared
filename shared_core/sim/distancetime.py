@@ -2,6 +2,9 @@
 
 import rospy
 import math
+import json
+import signal
+import subprocess
 from visualization_msgs.msg import Marker
 from openpyxl import Workbook, load_workbook # type: ignore
 import os
@@ -15,7 +18,6 @@ from gazebo_msgs.msg import ModelState
 from sensor_msgs.msg import JoyFeedbackArray,JoyFeedback
 import time,csv
 from geometry_msgs.msg import Twist, Point
-from rosbag_recorder import RecorderSession
 
 
 markers = Marker()
@@ -67,6 +69,22 @@ def odom_callback(config):
     # 更新之前的位置
     # print("当前prev: %.2f , %.2f", config.prev_x,config.prev_y)
     # print("当前总里程: %.2f 米", config.distance)
+
+
+def record_robot_position(config):
+    """Collect odometry positions and distance independently of rosbag startup."""
+    if config.first_time:
+        config.prev_x = config.x
+        config.prev_y = config.y
+        config.prev_x0 = config.x
+        config.prev_y0 = config.y
+        config.first_time = False
+    odom_callback(config)
+    config.distance0 = math.hypot(config.x - config.prev_x0,
+                                  config.y - config.prev_y0)
+    point = (config.x, config.y)
+    if not config.xy or config.xy[-1] != point:
+        config.xy.append(point)
 
 def play_celebration_sound():
     """
@@ -351,7 +369,7 @@ def set_robot_position(model_name, position, orientation):
         cmd_vel_pub.publish(stop_cmd)
         rate.sleep()
 
-_rosbag_recorder = None
+rosbag_process = None
 import pandas as pd
 
 def read_last_value_from_column():
@@ -392,84 +410,31 @@ def get_next_rosbag_number(excel_path="/home/pc/result/data.xlsx"):
 
     return last_num + 1
 
-def start_rosbag(cmd_vel_pub=None, initial_position=None, require_obstacles=False):
-    """Hold still until the initial /odom has been written and flushed.
-
-    require_obstacles is ignored for compatibility with older controllers.
-    """
-    global _rosbag_recorder
-    if _rosbag_recorder is not None:
-        raise RuntimeError("A rosbag recording is already running")
-
-    timeout = float(rospy.get_param("~rosbag_ready_timeout", 5.0))
-    position_tolerance = float(rospy.get_param("~rosbag_position_tolerance", 0.02))
-    velocity_tolerance = float(rospy.get_param("~rosbag_velocity_tolerance", 0.02))
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError("~rosbag_ready_timeout must be positive and finite")
-    if any(not math.isfinite(value) or value < 0
-           for value in (position_tolerance, velocity_tolerance)):
-        raise ValueError("Rosbag position and velocity tolerances must be nonnegative and finite")
-    initial_position = rospy.get_param("~rosbag_initial_position", initial_position)
-    if initial_position is not None:
-        if len(initial_position) < 2 or not all(math.isfinite(float(value))
-                                                for value in initial_position[:2]):
-            raise ValueError("Rosbag initial position must contain finite x and y coordinates")
-        initial_position = [float(value) for value in initial_position[:2]]
-    required_topics = ["/odom"]
-    if cmd_vel_pub is None:
-        cmd_vel_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
-
-    stop_cmd = Twist()
-    cmd_vel_pub.publish(stop_cmd)
+def start_rosbag():
+    """Start the standard rosbag command and return without a readiness wait."""
+    global rosbag_process
     rosbag_dir = os.path.expanduser("~/rosbag")
     os.makedirs(rosbag_dir, exist_ok=True)
     count = get_next_rosbag_number()
-    output_file = os.path.join(rosbag_dir, f"rosbag{count}.bag")
-    _rosbag_recorder = RecorderSession(
-        output_file, required_topics=required_topics,
-        initial_position=initial_position,
-        position_tolerance=position_tolerance,
-        velocity_tolerance=velocity_tolerance,
-        minimum_odom_stamp=rospy.Time.now().to_sec(),
-    )
+    output_file = os.path.join(rosbag_dir, f"rosbag{count}")
+    cmd = ["rosbag", "record", "-O", output_file,
+           "/cmd_vel", "/cmd_vel_human", "/odom", "/dynamic_obstacle_states"]
+    print(f"Starting rosbag recording: {' '.join(cmd)}")
+    rosbag_process = subprocess.Popen(cmd)
     rospy.on_shutdown(stop_rosbag)
-    print(f"Starting rosbag recording: {output_file}")
-    try:
-        _rosbag_recorder.start()
-        status = _rosbag_recorder.wait_until_ready(
-            lambda: cmd_vel_pub.publish(stop_cmd), timeout, rospy.is_shutdown,
-        )
-    except BaseException:
-        cmd_vel_pub.publish(stop_cmd)
-        try:
-            stop_rosbag()
-        except Exception as exc:
-            rospy.logerr("Failed to close recorder: %s", exc)
-        raise
-    rospy.loginfo("Recording ready: %s; initial odom: %s",
-                  ", ".join(status["written_topics"]), status["last_odom"])
+    print("rosbag recording process started.")
     return count
 
 
-def publish_cmd_vel(publisher, command):
-    """Stop the controller if its active recording fails after the handshake."""
-    if _rosbag_recorder is not None:
-        try:
-            _rosbag_recorder.check()
-        except RuntimeError:
-            publisher.publish(Twist())
-            raise
-    publisher.publish(command)
-
-
 def stop_rosbag():
-    """Drain queued messages, close the bag, and finish the recorder process."""
-    global _rosbag_recorder
-    recorder = _rosbag_recorder
-    _rosbag_recorder = None
-    if recorder is not None:
+    """Ask the standard rosbag process to close its file and exit."""
+    global rosbag_process
+    process = rosbag_process
+    rosbag_process = None
+    if process is not None:
         print("Stopping rosbag recording...")
-        recorder.stop()
+        process.send_signal(signal.SIGINT)
+        process.wait()
         print("rosbag recording stopped.")
 
 def atGoal(config):
@@ -480,33 +445,44 @@ def atGoal(config):
         return 1
     return 0
 
-def save_result(a, b, c, file_path="/home/pc/result/data.xlsx"):
-    """
-    将a、b写入A、B列，将c写入同一行F列
-    如果文件不存在，则创建并写入表头
-    """
+def save_robot_coordinates(count, coordinates, directory=None):
+    """Save an ordered JSON list of x/y points, matching src/dwa.py's format."""
+    if directory is None:
+        directory = os.path.expanduser("~/cood")
+    os.makedirs(directory, exist_ok=True)
+    output_file = os.path.join(directory, f"test{count}.txt")
+    with open(output_file, "w") as stream:
+        json.dump(list(coordinates), stream)
+    return output_file
+
+
+def save_result(a, b, c, file_path="/home/pc/result/data.xlsx",
+                start_time=None, distance=None, coordinates=None):
+    """Save ID/collision time/method in A/B/F, duration/distance in C/D."""
+    elapsed_time = round(get_time(start_time), 2) if start_time is not None else None
+    distance = round(distance, 2) if distance is not None else None
+    if coordinates is not None:
+        save_robot_coordinates(a, coordinates)
     if b<0:
         b=0
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
 
     if not os.path.exists(file_path):
         wb = Workbook()
         ws = wb.active
-        ws.append(["A", "B", "C", "D", "E", "F"])
+        ws.append(["bag_id", "collision_time_s", "elapsed_time_s",
+                   "distance_m", None, "method"])
     else:
         wb = load_workbook(file_path)
         ws = wb.active
+        ws.cell(row=1, column=3, value="elapsed_time_s")
+        ws.cell(row=1, column=4, value="distance_m")
 
-    # 新增一行（A、B列）
-    ws.append([a, b])
-
-    # 当前新增的行号
-    row = ws.max_row
-
-    # F列写入c
-    ws.cell(row=row, column=6).value = c
-
-    wb.save(file_path)
+    try:
+        ws.append([a, b, elapsed_time, distance, None, c])
+        wb.save(file_path)
+    finally:
+        wb.close()
 
 import os
 

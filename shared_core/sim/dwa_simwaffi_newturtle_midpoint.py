@@ -150,7 +150,7 @@ class Config():
         self.human=Twist()
         self.human.linear.x=0.0
         self.human.angular.z=0.0
-        self.xy = set()
+        self.xy = []
         self.r = rospy.Rate(20)
 
     # Callback for Odometry
@@ -165,7 +165,7 @@ class Config():
             euler_from_quaternion ([rot_q.x,rot_q.y,rot_q.z,rot_q.w])
         # 保留三位小数精度
         self.th = round(theta, 3)
-        self.xy.add((self.x,self.y))
+        record_robot_position(self)
 
     def share1(self,vel_msg):# human command get 获取人类指令
         # global human_r
@@ -685,9 +685,7 @@ def main():
     # initial linear and angular velocities
     u = np.array([0.0, 0.0])
     if RECORDER==True:
-        runtime_state.rosbag_id = start_rosbag(
-            cmd_vel_pub=pub, initial_position=target_position,
-        )
+        runtime_state.rosbag_id = start_rosbag()
     #     print("You can press y to stop and save rosbag when you need.")
     start_time = rospy.get_time()
     # runs until terminated externally
@@ -718,17 +716,17 @@ def main():
             speed.angular.z = config.human.angular.z
         # if runtime_state.result_pending:
         #     marker_pub.publish(markers)
-        publish_cmd_vel(pub, speed)
+        pub.publish(speed)
 
         if runtime_state.save_requested:
             if runtime_state.result_pending:
-                print("YOU have arrive the goal point")
-                stop_rosbag()
-                # with open(f'/home/frienkie/cood/testnew.txt', 'w') as f:
-                #     json.dump(list(config.xy), f)
-
-                # change_goal(config,rand.get_next())
-                # goal_sphere(config)
+                print("Save requested. Writing trial results.")
+                if RECORDER:
+                    save_result(
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 3,
+                        start_time=start_time, distance=config.distance, coordinates=config.xy,
+                    )
+                    stop_rosbag()
                 runtime_state.result_pending = False
             
         config.r.sleep()

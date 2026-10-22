@@ -140,7 +140,7 @@ class Config():
         self.human.angular.z=0.0
         self.v=0.0
         self.w=0.0
-        # self.xy = set()
+        self.xy = []
         self.r = rospy.Rate(20)
 
     # Callback for Odometry
@@ -157,7 +157,7 @@ class Config():
         self.th = round(theta, 3)
         self.v = msg.twist.twist.linear.x
         self.w = msg.twist.twist.angular.z
-        # self.xy.add((self.x,self.y))
+        record_robot_position(self)
 
     def share1(self,vel_msg):# human command get 获取人类指令
 
@@ -685,9 +685,7 @@ def main():
     u = np.array([0.0, 0.0])
     print("You can press y to stop and save rosbag when you need.")
     if RECORDER==True:
-        runtime_state.rosbag_id = start_rosbag(
-            cmd_vel_pub=pub, initial_position=target_position,
-        )
+        runtime_state.rosbag_id = start_rosbag()
     start_time = rospy.get_time()
     # runs until terminated externally
     while not rospy.is_shutdown():
@@ -717,29 +715,30 @@ def main():
             speed.angular.z = config.human.angular.z
         # if runtime_state.result_pending:
         #     marker_pub.publish(markers)
-        publish_cmd_vel(pub, speed)
+        pub.publish(speed)
 
         if atGoal(config) == 1 or runtime_state.save_requested:
             if runtime_state.result_pending:
-                print("YOU have arrive the goal point. write file.")
-                # with open(f'/home/frienkie/cood/testnew.txt', 'w') as f:
-                #     json.dump(list(config.xy), f)
-
-                # change_goal(config,rand.get_next())
-                # goal_sphere(config)
+                print("Goal reached or save requested. Writing trial results.")
+                if RECORDER:
+                    save_result(
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 3,
+                        start_time=start_time, distance=config.distance, coordinates=config.xy,
+                    )
+                    stop_rosbag()
                 play_celebration_sound()
-                if RECORDER==True:
-                    stop_rosbag()
-                    save_result(runtime_state.rosbag_id,round(counter.count_time-start_time,2),3)
                 runtime_state.result_pending = False
-        if counter.send_count>= 1:
+        if counter.send_count >= 1:
             if runtime_state.result_pending:
-                print("You have been hit by the obstacle,please reset the robot.write file")
-                if RECORDER==True:
+                print("Collision detected. Writing trial results.")
+                if RECORDER:
+                    save_result(
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 3,
+                        start_time=start_time, distance=config.distance, coordinates=config.xy,
+                    )
                     stop_rosbag()
-                    save_result(runtime_state.rosbag_id,round(counter.count_time-start_time,2),3)
                 runtime_state.result_pending = False
-            
+
         config.r.sleep()
 
 

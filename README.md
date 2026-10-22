@@ -43,63 +43,58 @@ export TURTLEBOT3_MODEL=burger
 - Subscribed: `scan`, `cmd_vel_human`,`/filtered_scan`,`/odom`
 - Published: `/cmd_vel`,`line_list`,`line_list_human`
 
-## Simulation recording before motion
+## Simulation recording and trial results
 
-All nine `shared_core/sim/dwa*.py` controllers use a recording handshake when
-their existing `RECORDER` switch is enabled. The controller publishes zero
-velocity at 20 Hz while a separate Python recorder starts. The recorder first
-writes a fresh, stationary `/odom` sample at the script's initial x/y position.
-This is the only topic required for startup. `/cmd_vel`, `/cmd_vel_human` and
-`/dynamic_obstacle_states` are also subscribed and recorded whenever messages
-arrive, but never block startup.
+All nine `shared_core/sim/dwa*.py` controllers start the standard
+`rosbag record -O` command directly when `RECORDER` is enabled. The controller
+continues immediately after launching it; there is no recording-readiness
+handshake, topic/pose/velocity check, or additional startup sleep. Velocity
+commands are published directly.
 
-The recorder flushes the initial `/odom` before acknowledging readiness through
-its own process pipe. Only then does the controller start its experiment timer
-and publish motion commands. There is no fixed 0.8-second startup sleep.
-A missing `/odom`, an incorrect initial pose, or a write failure aborts startup;
-an active recorder failure also stops the controller's velocity output.
+Robot coordinates are collected independently in each controller's `/odom`
+callback, following the method in `shared_core/src/dwa.py`. Coordinates are
+kept in sampling order, including return visits, while consecutive duplicate
+points are omitted. Distance is the sum of successive x/y displacements;
+steps below 0.0001 m are ignored as in the original helper. The first odometry
+sample initializes the previous position, so a nonzero initial position does
+not add an artificial distance from `(0, 0)`.
 
-Bag numbering uses the largest ID in `/home/pc/result/data.xlsx`, then adds
-one (or starts at one when no IDs exist). Existing filenames do not change
-the selected ID. Recording writes to `~/rosbag/rosbagN.bag.active`, overwriting
-any same-name unfinished recording. Stopping a ready recorder drains pending
-messages, closes the bag, and replaces any existing `rosbagN.bag` with the new
-recording. If the new attempt fails, its `.active` file remains for inspection
-and an existing completed `.bag` is kept until a successful replacement.
-The recorder uses ROS time for message receipt stamps
-and wall time for its startup timeout, including when Gazebo is paused.
+With `RECORDER` enabled, reaching the goal, requesting a save, or detecting a
+collision saves the trial results once. The TurtleBot variants retain their
+manual-save trigger. The ordered coordinates are written as a JSON list to
+`~/cood/testN.txt`, for example `[[0.0, 0.0], [0.1, 0.0]]`, independently of
+when rosbag connects to `/odom`. Bag output remains `~/rosbag/rosbagN.bag`.
+Numbering uses the largest ID in `/home/pc/result/data.xlsx`, then adds one
+(or starts at one when no IDs exist). Same-name files are overwritten.
 
-Private ROS parameters:
+`save_result` preserves the existing A/B/F fields and adds duration and distance
+in C/D. Existing result rows are preserved when appending new trials.
 
-| Parameter | Default | Purpose |
-| --- | --- | --- |
-| `~rosbag_ready_timeout` | `5.0` s | Maximum time to wait for written initial data |
-| `~rosbag_position_tolerance` | `0.02` m | Allowed x/y distance from the initial position |
-| `~rosbag_velocity_tolerance` | `0.02` | Maximum absolute initial `linear.x` (m/s) and `angular.z` (rad/s); other velocity components are ignored |
-| `~rosbag_initial_position` | Script's initial x/y | Expected position **in the `/odom` frame**; override if Gazebo world and odometry origins differ |
+| Excel column | Value |
+| --- | --- |
+| A | Bag/trial ID |
+| B | First collision time relative to trial start, or 0 without a collision |
+| C | Elapsed ROS time in seconds, rounded to two decimals |
+| D | Accumulated distance in metres, rounded to two decimals |
+| E | Reserved |
+| F | Method ID, as before |
 
-The TurtleBot variants use their configured `(0, 1.5)` initial position.
-For example, with `RECORDER` enabled:
+The timer starts immediately after launching rosbag. Duration and distance
+are captured before saving files and waiting for rosbag to close.
 
-```bash
-rosrun shared_core dwa_simwaffi_midpoint.py _rosbag_ready_timeout:=10.0
-```
+All nine simulation DWA scripts have independent `RECORDER` (rosbag/results)
+and `RECORDER_CSV` (CSV) switches. CSV initialization always defines `log_file`
+and `log_writer`, setting both to `None` when disabled. Existing enabled/disabled
+states are preserved. CSV currently writes its header; the per-candidate cost
+row statements in the controllers remain commented out.
 
-Run the handshake, failure handling and shutdown tests without ROS:
+Run the direct-launch, coordinate and Excel result tests with:
 
 ```bash
 python3 -m unittest discover -s shared_core/sim/tests -p 'test_rosbag_recording.py' -v
 ```
 
-In Gazebo, verify that the saved bag's first `/odom` is at the expected initial
-pose and precedes its first nonzero `/cmd_vel`. The bag includes the short
-stationary preparation interval; the controller's experiment timer excludes it.
-
-All nine simulation DWA scripts have independent `RECORDER` (rosbag) and
-`RECORDER_CSV` (CSV) switches. CSV initialization always defines `log_file` and
-`log_writer`, setting both to `None` when disabled. Existing enabled/disabled
-states are preserved. CSV currently writes its header; the per-candidate cost
-row statements in the controllers remain commented out.
+The Excel tests require `openpyxl`; the other tests do not require ROS.
 
 ## LIMO simulation: repeated wheel TF timestamps
 
