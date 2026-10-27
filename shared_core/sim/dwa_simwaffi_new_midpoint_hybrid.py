@@ -116,7 +116,7 @@ class Config():
                 self.trajectory_times, self.trajectory_times[1:]
             )
         )
-        self.predict_time = 5.0  # [s]
+        self.predict_time = 2.4  # [s]
         self.movetimemin = 5.0
         self.goal_radius=0.4
         #########################################
@@ -313,22 +313,22 @@ def calc_dynamic_window(x, config):
     # -----------------------------
     v_min = max(
         config.min_speed,
-        x[3] - config.max_accel * config.dt
+        x[3] - config.max_accel * config.predict_time 
     )
 
     v_max = min(
         config.max_speed,
-        x[3] + config.max_accel * config.dt
+        x[3] + config.max_accel * config.predict_time 
     )
 
     w_min = max(
         -config.max_yawrate,
-        x[4] - config.max_dyawrate * config.dt
+        x[4] - config.max_dyawrate * config.predict_time 
     )
 
     w_max = min(
         config.max_yawrate,
-        x[4] + config.max_dyawrate * config.dt
+        x[4] + config.max_dyawrate * config.predict_time 
     )
 
     # -----------------------------
@@ -629,17 +629,10 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
             if np.isinf(ob_cost):
                 continue
             ob_movecost = cal_time(cube, ttc_motion, v, w, config.movetimemin)
-            if config.predict_time<=config.movetimemin:
-                if ob_movecost<config.movetimemin:
-                    continue
-                ob_movecost=0
-            else:
-                ob_movecost=config.move_obs_gain*(ob_movecost-config.movetimemin)/(config.predict_time-config.movetimemin)
-            
-                if ob_movecost<=0:
-                    continue
+            if ob_movecost<=config.movetimemin:
+                continue
 
-            final_cost = to_human_cost + speed_cost + ob_movecost+ob_cost
+            final_cost = to_human_cost + speed_cost +ob_cost
 
             # if log_writer is not None:
             #     log_writer.writerow([
