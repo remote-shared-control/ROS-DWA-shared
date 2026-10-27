@@ -41,7 +41,7 @@ from lidar3d import *
 # args = parser.parse_args()
 import csv
 
-RECORDER = True  # Set to True to enable CSV logging, False to disable
+RECORDER = True  # Enable rosbag recording.
 RECORDER_CSV = False  # Set to True to enable CSV logging, False to disable
 if RECORDER_CSV:
     log_dir = "/home/frienkie/rosbagpaper"
@@ -59,6 +59,19 @@ else:
     log_writer = None
     log_file = None
     print("❌ CSV logging disabled")
+
+
+class RuntimeState:
+    """Keep the simulation's shared runtime state in one place."""
+
+    def __init__(self):
+        self.control_mode = 0  # 0: human control, 1: shared control
+        self.save_requested = False
+        self.rosbag_id = 0
+        self.result_pending = True  # Handle the result only once.
+
+
+runtime_state = RuntimeState()
 
 
 class Config():
@@ -95,7 +108,7 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 2.0 #lower = faster
+        self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
         self.move_obs_gain = 1.0
         # if args.param == 3:
@@ -127,7 +140,7 @@ class Config():
         self.human.angular.z=0.0
         self.v=0.0
         self.w=0.0
-        # self.xy = set()
+        self.xy = []
         self.r = rospy.Rate(20)
 
     # Callback for Odometry
@@ -144,7 +157,7 @@ class Config():
         self.th = round(theta, 3)
         self.v = msg.twist.twist.linear.x
         self.w = msg.twist.twist.angular.z
-        # self.xy.add((self.x,self.y))
+        record_robot_position(self)
 
     def share1(self,vel_msg):# human command get 获取人类指令
 
@@ -402,7 +415,6 @@ def calc_trajectory(xinit, v, y, config):
 ################################################################################
 
 
-
 # Calculate trajectory, costings, and return velocities to apply to robot
 def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     xinit = x[:]
@@ -453,7 +465,6 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
 #################################################################################
 
 
-
 # Calculate obstacle cost inf: collision, 0:free
 def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], config) -> float:
     ox_arr, oy_arr = ob
@@ -492,81 +503,55 @@ def dwa_control(x, u, config, ob,cube,step, log_writer):
 
     return u
 
-yici=1
+
+class TrajectoryMarkers:
+    """Initialize the robot and human trajectory markers for RViz."""
+
+    def __init__(self):
+        self.marker = self._create_marker(0.0, 1.0, 0.0)
+        self.h_marker = self._create_marker(0.0, 0.0, 1.0)
+
+    @staticmethod
+    def _create_marker(red, green, blue):
+        marker = Marker()
+        marker.header.frame_id = "odom"
+        marker.type = marker.LINE_STRIP
+        marker.action = marker.ADD
+
+        marker.scale.x = 0.1
+        marker.scale.y = 0.1
+        marker.scale.z = 0.1
+
+        marker.color.a = 1.0
+        marker.color.r = red
+        marker.color.g = green
+        marker.color.b = blue
+
+        marker.pose.orientation.x = 0.0
+        marker.pose.orientation.y = 0.0
+        marker.pose.orientation.z = 0.0
+        marker.pose.orientation.w = 1.0
+
+        marker.pose.position.x = 0.0
+        marker.pose.position.y = 0.0
+        marker.pose.position.z = 0.0
+        return marker
 
 
+trajectory_markers = TrajectoryMarkers()
+marker = trajectory_markers.marker
+h_marker = trajectory_markers.h_marker
 
-marker =  Marker()
-marker.header.frame_id = "odom"
-marker.type = marker.LINE_STRIP
-marker.action = marker.ADD
-    # marker scale
-marker.scale.x = 0.1
-marker.scale.y = 0.1
-marker.scale.z = 0.1
-
-    # marker color #green
-marker.color.a = 1.0
-marker.color.r = 0.0
-marker.color.g = 1.0
-marker.color.b = 0.0
-
-    # marker orientaiton
-marker.pose.orientation.x = 0.0
-marker.pose.orientation.y = 0.0
-marker.pose.orientation.z = 0.0
-marker.pose.orientation.w = 1.0
-
-    # marker position  ###no influence in line
-marker.pose.position.x = 0.0
-marker.pose.position.y = 0.0
-marker.pose.position.z = 0.0
-
-h_marker =  Marker()
-h_marker.header.frame_id = "odom"
-h_marker.type = h_marker.LINE_STRIP
-h_marker.action = h_marker.ADD
-    # marker scale
-h_marker.scale.x = 0.1
-h_marker.scale.y = 0.1
-h_marker.scale.z = 0.1
-
-    # marker color #green
-h_marker.color.a = 1.0
-h_marker.color.r = 0.0
-h_marker.color.g = 0.0
-h_marker.color.b = 1.0
-
-    # marker orientaiton
-h_marker.pose.orientation.x = 0.0
-h_marker.pose.orientation.y = 0.0
-h_marker.pose.orientation.z = 0.0
-h_marker.pose.orientation.w = 1.0
-
-    # marker position  ###no influence in line
-h_marker.pose.position.x = 0.0
-h_marker.pose.position.y = 0.0
-h_marker.pose.position.z = 0.0
-
-def line(num):
-    marker.points = []
+def line(num, target_marker, x_points, y_points):
+    """Replace a trajectory marker's points with the requested samples."""
+    target_marker.points = []
 
     for i in range(num):
         p = Point()
-        p.x = robot_trajectory.x_points[i]
-        p.y = robot_trajectory.y_points[i]
+        p.x = x_points[i]
+        p.y = y_points[i]
         p.z = 0.0
-        marker.points.append(p)
-
-def h_line(num):
-    h_marker.points = []
-
-    for i in range(num):
-        p = Point()
-        p.x = human_trajectory.x_points[i]
-        p.y = human_trajectory.y_points[i]
-        p.z = 0.0
-        h_marker.points.append(p)
+        target_marker.points.append(p)
 
 def remove_near_points(xy_set, pose_data, threshold=0.4):
 
@@ -610,31 +595,24 @@ def remove_near_points(xy_set, pose_data, threshold=0.4):
     )
 
 
-inputkey=0
-write=0
-
 def signal_handler(signal, frame):
     print("\nCtrl + C  is pressed,exit sys")
-    if yici>0:
-        global file_value
-        delete_rosbag(file_value)
+    if runtime_state.result_pending:
+        delete_rosbag(runtime_state.rosbag_id)
         print("You have not arrive the goal point,rosbag deleted")
     if log_file is not None:
-            log_file.close()
+        log_file.close()
     sys.exit(0)  # 退出程序
 
 # 绑定 SIGINT 信号（Ctrl + C）到 signal_handler
 signal.signal(signal.SIGINT, signal_handler)
 
 def listen_key():
-    global write
-
     def on_press(key):
-        global write
         try:
             if key.char == 'y':  # 检测键盘输入 y
-                write = 1
-                print("Key 'y' detected. Variable 'write' set to 1.")
+                runtime_state.save_requested = True
+                print("Key 'y' detected. Save requested.")
         except AttributeError:
             pass
 
@@ -644,20 +622,18 @@ def listen_key():
 
 
 def main():
-    global yici
-    global write
-    global file_value
+    runtime_state.rosbag_id = None
     print(__file__ + " start!!")
     print("human is 0,share is 1,have been 1 yet")
-    inputkey=1
+    runtime_state.control_mode = 0
     # inputs=input()
     # if inputs=="0":
-    #         inputkey=0
+    #         runtime_state.control_mode = 0
     # elif inputs=="1":
-    #         inputkey=1
+    #         runtime_state.control_mode = 1
     # else:
     #         rospy.loginfo("input error,run as human")
-    #         inputkey = 0
+    #         runtime_state.control_mode = 0
 
     # robot specification
     # rand=RandomNumberGenerator()
@@ -700,15 +676,16 @@ def main():
     x = np.array([config.x, config.y, config.th, 0.0, 0.0])
     # initial linear and angular velocities
     u = np.array([0.0, 0.0])
+    
     print("You can press y to stop and save rosbag when you need.")
     if RECORDER==True:
-        file_value=start_rosbag()
+        runtime_state.rosbag_id = start_rosbag()
     start_time = rospy.get_time()
     # runs until terminated externally
     while not rospy.is_shutdown():
         current_time = rospy.get_time() - start_time
 
-        if (inputkey== 1):
+        if runtime_state.control_mode == 1:
             x[0] = config.x
             x[1] = config.y
             x[2] = config.th
@@ -719,41 +696,49 @@ def main():
             u = dwa_control(x, u, config, processor.xy_set,cube,step=current_time,log_writer=log_writer)
             speed.linear.x = u[0]
             speed.angular.z = u[1]
-            line(robot_trajectory.point_count)
+            line(robot_trajectory.point_count, marker,
+                 robot_trajectory.x_points, robot_trajectory.y_points)
             pub_line.publish(marker)
-            h_line(human_trajectory.point_count)
+            line(human_trajectory.point_count, h_marker,
+                 human_trajectory.x_points, human_trajectory.y_points)
             pub_line_human.publish(h_marker)
         
         else:
             # if 0 then do directly
             speed.linear.x = config.human.linear.x
             speed.angular.z = config.human.angular.z
-        # if yici>0:
+        # if runtime_state.result_pending:
         #     marker_pub.publish(markers)
         pub.publish(speed)
 
-        if atGoal(config)==1 or write==1 :
-            if yici>0:
-                print("YOU have arrive the goal point. write file.")
-                stop_rosbag()
-                # with open(f'/home/frienkie/cood/testnew.txt', 'w') as f:
-                #     json.dump(list(config.xy), f)
-
-                # change_goal(config,rand.get_next())
-                # goal_sphere(config)
+        if atGoal(config) == 1 or runtime_state.save_requested:
+            if runtime_state.result_pending:
+                print("Goal reached or save requested. Writing trial results.")
+                if RECORDER:
+                    save_result(
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 0,
+                        start_time=start_time, distance=config.distance, coordinates=config.xy,
+                    )
+                    stop_rosbag()
                 play_celebration_sound()
-                save_result(file_value,round(counter.count_time-start_time,2),0)
-                yici=0
-        if counter.send_count>= 1:
-            if yici>0:
-                print("You have been hit by the obstacle,please reset the robot.write file")
-                stop_rosbag()
-                save_result(file_value,round(counter.count_time-start_time,2),0)
-                yici=0
-            
+                runtime_state.result_pending = False
+        if counter.send_count >= 1:
+            if runtime_state.result_pending:
+                print("Collision detected. Writing trial results.")
+                if RECORDER:
+                    save_result(
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 0,
+                        start_time=start_time, distance=config.distance, coordinates=config.xy,
+                    )
+                    stop_rosbag()
+                runtime_state.result_pending = False
+
         config.r.sleep()
 
 
 if __name__ == '__main__':
     rospy.init_node('shared_dwa')
-    main()
+    try:
+        main()
+    finally:
+        stop_rosbag()

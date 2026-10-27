@@ -803,7 +803,7 @@ def main():
                 print("Goal reached or save requested. Writing trial results.")
                 if RECORDER:
                     save_result(
-                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 2,
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 2.1,
                         start_time=start_time, distance=config.distance, coordinates=config.xy,
                     )
                     stop_rosbag()
@@ -814,7 +814,7 @@ def main():
                 print("Collision detected. Writing trial results.")
                 if RECORDER:
                     save_result(
-                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 2,
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 2.1,
                         start_time=start_time, distance=config.distance, coordinates=config.xy,
                     )
                     stop_rosbag()
