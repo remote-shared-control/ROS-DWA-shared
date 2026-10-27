@@ -287,8 +287,6 @@ def cal_time(cube, transition, v, w, T):
     的机器人位姿求圆心、坐标转换和边界方程；最终加回 t_constant。
     """
     T = float(T)
-    if T < 0.0:
-        raise ValueError("T must be nonnegative")
     no_collision = T + 1.0
     obstacles = prepare_obstacles(cube).obstacles
     if not obstacles:
