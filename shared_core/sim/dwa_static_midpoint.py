@@ -121,7 +121,7 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 2.0 #lower = faster
+        self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
         self.move_obs_gain = 1.0
         # if args.param == 3:
@@ -847,7 +847,7 @@ def main():
                 print("Goal reached or save requested. Writing trial results.")
                 if RECORDER:
                     save_result(
-                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 1,
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 1.1,
                         start_time=start_time, distance=config.distance, coordinates=config.xy,
                     )
                     stop_rosbag()
@@ -858,7 +858,7 @@ def main():
                 print("Collision detected. Writing trial results.")
                 if RECORDER:
                     save_result(
-                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 1,
+                        runtime_state.rosbag_id, round(counter.count_time - start_time, 2), 1.1,
                         start_time=start_time, distance=config.distance, coordinates=config.xy,
                     )
                     stop_rosbag()

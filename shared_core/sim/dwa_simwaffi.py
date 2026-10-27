@@ -42,10 +42,10 @@ import csv
 
 
 RECORDER = True  # Enable rosbag recording.
-RECORDER_CSV = True  # Enable CSV logging; preserve the previous enabled state.
+RECORDER_CSV = False      # Enable CSV logging; preserve the previous enabled state.
 
 if RECORDER_CSV:
-    log_dir = "/home/frienkie/rosbagpaper"
+    log_dir = "/home/pc/rosbagpaper"
     os.makedirs(log_dir, exist_ok=True)
     log_path = os.path.join(log_dir, "vw_cost_log.csv")
     log_file = open(log_path, "w", newline="")
@@ -107,7 +107,7 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 2.0 #lower = faster
+        self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
         # if args.param == 3:
         #     self.to_human_cost_gain = 2.0 #lower = detour
@@ -421,47 +421,38 @@ def calc_final_input(x, u, vs, ws, config, ob,readob,step=None, log_writer=None)
 
 
 # Calculate obstacle cost inf: collision, 0:free
-def calc_obstacle_cost(traj, ob, config,readob):
-    skip_n = 1
+def calc_obstacle_cost(traj, ob, config, readob):
+    if len(traj) <= 1:
+        return 1.0
+
     minr = config.maxdect
+    ox_arr, oy_arr = ob
+
+    if ox_arr.size > 0 and oy_arr.size > 0:
+        tx = traj[1:, 0:1]
+        ty = traj[1:, 1:2]
+        dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2
+
+        if np.any(dist2 <= config.robot_radius**2):
+            return float("-Inf")
+
+        minr = min(minr, np.sqrt(dist2.min()))
+
     moving_future = readob.moving_future
-    obs_info=readob.obs_info
-    # 安全检查：如果 moving_future 为 None 或为空，则跳过移动障碍物检查
-    if moving_future is None or moving_future.shape[0] == 0:
-        num_obs = 0
-    else:
-        num_obs = moving_future.shape[0]
-    oxs, oys = ob
-    # Loop through every obstacle in set and calc Pythagorean distance
-    # Use robot radius to determine if collision
-    if oxs.size > 0:
-        for ii in range(1, len(traj[:, 1]), skip_n):
-            dx = traj[ii, 0] - oxs
-            dy = traj[ii, 1] - oys
+    if moving_future is not None and moving_future.size > 0:
+        # Skip t=0 in both predictions and keep the remaining samples aligned.
+        num_steps = min(len(traj), moving_future.shape[1])
+        if num_steps > 1:
+            dx = traj[None, 1:num_steps, 0] - moving_future[:, 1:num_steps, 0]
+            dy = traj[None, 1:num_steps, 1] - moving_future[:, 1:num_steps, 1]
+            distances = np.hypot(dx, dy) - readob.obs_info[:, 4:5]
 
-            r = np.hypot(dx, dy)
-
-            if np.any(r <= config.robot_radius):
+            if np.any(distances <= config.robot_radius):
                 return float("-Inf")
 
-            minr = min(minr, np.min(r))
+            minr = min(minr, distances.min())
 
-    for obs_i in range(num_obs):
-        mob_traj = moving_future[obs_i]    # shape = (num_steps, 2)
-        mob_radius = obs_info[obs_i, 4]    # 半径
-
-        for t_i in range(mob_traj.shape[0]):
-            dx = traj[t_i, 0] - mob_traj[t_i, 0]
-            dy = traj[t_i, 1] - mob_traj[t_i, 1]
-            dist = np.hypot(dx, dy)-mob_radius
-
-            if dist <= config.robot_radius:
-                return float("-Inf")
-                # print(f"Collision at obs {obs_i}, timestep {t_i}")
-            if minr>dist:
-                minr=dist
-
-    return (minr-config.robot_radius)/(config.maxdect-config.robot_radius)
+    return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 
 ############################################################################
 def calc_to_human_cost( v, w,config,traj,n):
