@@ -18,11 +18,16 @@ SIM_DIR = Path(__file__).resolve().parents[1]
 def load_motion(filename):
     parsed = ast.parse((SIM_DIR / filename).read_text(encoding="utf-8"))
     names = {"motion_midpoint", "prepare_linear_motion", "calc_trajectory_midpoint_vw",
-             "calc_final_input"}
+             "calc_final_input", "calc_obstacle_cost"}
+    future_imports = [node for node in parsed.body
+                      if isinstance(node, ast.ImportFrom) and node.module == "__future__"]
     body = [node for node in parsed.body
             if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {"np": np, "math": math, "bisect_left": bisect_left}
-    exec(compile(ast.Module(body=body, type_ignores=[]), filename, "exec"), namespace)
+    exec(compile(ast.Module(body=future_imports + body, type_ignores=[]),
+                 filename, "exec"), namespace)
+    if filename == "dwa_simwaffi_new_midpoint_hybrid.py":
+        namespace["prepare_obstacles"] = load_solver().prepare_obstacles
     return namespace
 
 
@@ -63,6 +68,19 @@ class HybridTrajectoryTests(unittest.TestCase):
         cls.hybrid = load_motion("dwa_simwaffi_new_midpoint_hybrid.py")
         cls.original = load_motion("dwa_simwaffi_new_midpoint.py")
         cls.solver = load_solver()
+
+    def test_static_cost_keeps_contact_detection_when_another_point_is_nan(self):
+        config = SimpleNamespace(robot_radius=0.21, maxdect=1.2)
+        trajectory = np.zeros((2, 5))
+        calculate = self.hybrid["calc_obstacle_cost"]
+        for x in (0.0, config.robot_radius):
+            self.assertEqual(calculate(
+                trajectory, (np.array([np.nan, x]), np.zeros(2)), config), -math.inf)
+        self.assertAlmostEqual(calculate(
+            trajectory, (np.array([1.0]), np.zeros(1)), config),
+            (1.0 - config.robot_radius) / (config.maxdect - config.robot_radius))
+        self.assertTrue(math.isnan(calculate(
+            trajectory, (np.array([np.nan, 2.0]), np.zeros(2)), config)))
 
     def test_reuses_switch_times_and_preserves_original_output(self):
         initial = np.array([1.0, -2.0, 0.7, -0.1, 0.2])
@@ -126,6 +144,7 @@ class HybridTrajectoryTests(unittest.TestCase):
         solver = mock.Mock(wraps=self.solver.cal_time)
         with mock.patch.dict(self.hybrid, {
                 "cal_time": solver,
+                "prepare_obstacles": self.solver.prepare_obstacles,
                 "calc_to_human_cost": mock.Mock(return_value=0.0),
                 "calc_obstacle_cost": mock.Mock(return_value=1.0),
                 "robot_trajectory": mock.Mock(), "human_trajectory": mock.Mock()}):
@@ -178,6 +197,88 @@ class HybridTrajectoryTests(unittest.TestCase):
                 self.assertEqual(self.solver.cal_time(
                     SimpleNamespace(data=[rectangle(20, 21, 20, 21)]),
                     data, v, w, config.movetimemin), config.movetimemin + 1.0)
+
+
+class HybridSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.hybrid = load_motion("dwa_simwaffi_new_midpoint_hybrid.py")
+        self.config = config_for()
+        self.config.human = SimpleNamespace(
+            linear=SimpleNamespace(x=0.0), angular=SimpleNamespace(z=0.15))
+        self.config.to_human_cost_gain = 1.0
+        self.config.speed_cost_gain = self.config.obs_cost_gain = 0.0
+        self.config.min_speed, self.config.max_speed = -1.0, 1.0
+        self.cube = SimpleNamespace(data=[rectangle(20, 21, 20, 21)])
+        self.robot, self.human = mock.Mock(), mock.Mock()
+        self.candidates = []
+        self.ttc_calls = []
+
+    def select(self, scores, collision_times):
+        calculate = self.hybrid["calc_trajectory_midpoint_vw"]
+
+        def record_trajectory(*args):
+            traj = calculate(*args)
+            self.candidates.append(traj)
+            return traj
+
+        def record_ttc(cube, motion, v, w, horizon):
+            self.ttc_calls.append((cube, w))
+            self.assertEqual(horizon, self.config.movetimemin)
+            return collision_times.get(w, horizon + 1.0)
+
+        original_prepare = self.hybrid["prepare_obstacles"]
+        self.prepare = mock.Mock(wraps=original_prepare)
+        self.fallback = [0.7, -0.7]
+        with mock.patch.dict(self.hybrid, {
+                "prepare_obstacles": self.prepare,
+                "calc_trajectory_midpoint_vw": record_trajectory,
+                "cal_time": record_ttc,
+                "calc_to_human_cost": lambda w, config: 1.0 - scores[w],
+                "calc_obstacle_cost": lambda *args: 1.0,
+                "robot_trajectory": self.robot,
+                "human_trajectory": self.human}):
+            return self.hybrid["calc_final_input"](
+                np.zeros(5), self.fallback, [0.3], list(scores),
+                self.config, None, self.cube)
+
+    def test_every_candidate_runs_ttc_including_lower_scores(self):
+        result = self.select({0.1: 0.2, 0.2: 0.9, 0.3: 0.6}, {})
+        self.assertEqual(result, [0.3, 0.2])
+        self.assertEqual([w for _, w in self.ttc_calls], [0.1, 0.2, 0.3])
+        self.assertEqual(len(self.candidates), 3)
+        self.assertIs(self.robot.set_trajectory.call_args.args[0], self.candidates[1])
+        self.human.update.assert_called_once()
+
+    def test_equal_scores_keep_the_last_safe_candidate(self):
+        result = self.select({0.1: 0.6, 0.2: 0.6, 0.3: 0.6}, {})
+        self.assertEqual(result, [0.3, 0.3])
+        self.assertEqual([w for _, w in self.ttc_calls], [0.1, 0.2, 0.3])
+        self.assertIs(self.robot.set_trajectory.call_args.args[0], self.candidates[2])
+
+    def test_blocked_best_score_checks_next_feasible_candidate(self):
+        result = self.select(
+            {0.1: 0.2, 0.2: 0.9, 0.3: 0.6}, {0.2: self.config.movetimemin})
+        self.assertEqual(result, [0.3, 0.3])
+        self.assertEqual([w for _, w in self.ttc_calls], [0.1, 0.2, 0.3])
+        self.assertIs(self.robot.set_trajectory.call_args.args[0], self.candidates[2])
+
+    def test_all_blocked_preserve_fallback_and_share_one_prepared_snapshot(self):
+        result = self.select(
+            {0.1: 0.2, 0.2: 0.9, 0.3: 0.6},
+            dict.fromkeys((0.1, 0.2, 0.3), self.config.movetimemin))
+        self.assertIs(result, self.fallback)
+        self.assertEqual(result, [0.0, self.config.human.angular.z])
+        self.assertEqual([w for _, w in self.ttc_calls], [0.1, 0.2, 0.3])
+        self.prepare.assert_called_once_with(self.cube)
+        prepared = self.ttc_calls[0][0]
+        self.assertIsNot(prepared, self.cube)
+        self.assertTrue(all(cube is prepared for cube, _ in self.ttc_calls))
+        self.robot.set_trajectory.assert_called_once_with(None)
+
+    def test_zero_score_can_win_and_negative_scores_still_run_ttc(self):
+        result = self.select({0.1: -0.2, 0.2: 0.0, 0.3: -0.1}, {})
+        self.assertEqual(result, [0.3, 0.2])
+        self.assertEqual([w for _, w in self.ttc_calls], [0.1, 0.2, 0.3])
 
 
 class HybridCollisionTests(unittest.TestCase):
@@ -300,6 +401,38 @@ class HybridCollisionTests(unittest.TestCase):
         for rows in (None, [], [rectangle(20, 21, 20, 21)]):
             with self.subTest(rows=rows):
                 self.assertEqual(self.solve(rows, motion, w=1), 6.0)
+
+    def test_prepared_snapshot_matches_raw_for_multiple_candidates(self):
+        cube = SimpleNamespace(data=[rectangle(0.8, 1.0, 0.1, 0.4, vx=-0.1),
+                                     rectangle(-2.2, -2, -0.1, 0.1),
+                                     rectangle(2, 2.2, -0.1, 0.1, vx=-0.25)])
+        prepared = self.solver.prepare_obstacles(cube)
+        self.assertIs(self.solver.prepare_obstacles(prepared), prepared)
+        for motion in (transition([0], [(0, 0)]),
+                       transition([0, 1], [(0, 0), (0.5, 0)])):
+            for v in (-1.0, 0.0, 1.0):
+                for w in (-0.7, 0.0, 0.7):
+                    with self.subTest(v=v, w=w, times=motion["times"]):
+                        self.assertEqual(
+                            self.solver.cal_time(prepared, motion, v, w, 5.0),
+                            self.solver.cal_time(cube, motion, v, w, 5.0))
+
+    def test_prepared_snapshot_copies_rows_and_next_cycle_sees_updates(self):
+        row = rectangle(1.0, 1.2, -0.1, 0.1)
+        row[1:5] = [np.array(point) for point in row[1:5]]
+        cube = SimpleNamespace(data=[row])
+        motion = transition([0], [(0, 0)])
+        prepared = self.solver.prepare_obstacles(cube)
+        self.assertEqual(self.solver.cal_time(prepared, motion, 1.0, 0.0, 5.0), 1.0)
+
+        for point in cube.data[0][1:5]:
+            point[0] += 1.0
+        cube.data[0][5] = 0.5
+        next_cycle = self.solver.prepare_obstacles(cube)
+        self.assertIsNot(next_cycle, prepared)
+        self.assertEqual(self.solver.cal_time(prepared, motion, 1.0, 0.0, 5.0), 1.0)
+        self.assertEqual(self.solver.cal_time(next_cycle, motion, 1.0, 0.0, 5.0), 4.0)
+        self.assertEqual(self.solver.cal_time(cube, motion, 1.0, 0.0, 5.0), 4.0)
 
 
 if __name__ == "__main__":

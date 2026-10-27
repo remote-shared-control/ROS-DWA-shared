@@ -63,6 +63,7 @@ def load_controller(source, filename):
         ),
         calc_obstacle_cost=lambda *args: 0.8,
         cal_time=lambda *args: 100.0,
+        prepare_obstacles=lambda cube: cube,
         calc_obstacle_ttc=lambda *args: 100.0,
         angle_robot=0.0,
         marker=SimpleNamespace(points=[]),

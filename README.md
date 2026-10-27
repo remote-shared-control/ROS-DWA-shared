@@ -129,6 +129,29 @@ or no obstacles, the solver returns `config.movetimemin + 1`. Static-obstacle
 evaluation and RViz retain the existing midpoint trajectory and static prediction
 horizon. The two original programs are unchanged.
 
+The hybrid controller checks TTC for every candidate that passes static-obstacle
+collision detection, including lower-scoring candidates. It rejects
+`TTC <= config.movetimemin`; a contact exactly at the horizon remains unsafe.
+Obstacle edge geometry is copied and prepared once per control cycle. During
+the constant-speed phase, conservative swept bounding boxes skip only obstacle
+pairs that cannot meet; possible contacts still use the continuous equations
+and the original root precision. After finding a collision, later obstacles
+only need to be searched up to that earliest time. Candidate spacing and the
+midpoint sampling interval are unchanged.
+
+A ROS-free benchmark covers 440 candidates, crossing moving obstacles, dense
+static clouds and a moving wall that blocks every candidate:
+
+```bash
+python3 shared_core/sim/benchmark_hybrid_ttc.py --repeats 9 --profile
+```
+
+Add `--baseline-ref c4f083a` to compare with the version before optimization and
+verify matching commands and robot/human preview trajectories. Each current
+benchmark scenario also checks that no statically feasible candidate skips TTC.
+Reported Hz measures planning computation only; it excludes ROS callbacks,
+publishing and Gazebo. The node still targets `rospy.Rate(20)`.
+
 ## LIMO simulation: repeated wheel TF timestamps
 
 If `dwa_simwaffi_new.py` prints `TF_REPEATED_DATA` for

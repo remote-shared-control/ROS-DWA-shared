@@ -28,7 +28,7 @@ from tf.transformations import euler_from_quaternion
 from std_msgs.msg import Float32
 from visualization_msgs.msg import Marker
 from cal_ctime import CubeReader
-from cal_ctime_midpoint import cal_time
+from cal_ctime_midpoint import cal_time, prepare_obstacles
 import numpy as np
 import signal
 import sys
@@ -610,48 +610,34 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     max_u = u
     max_u[0] = 0.0 #no way can be chosen
     max_u[1] = config.human.angular.z
-    # evaluate all trajectory with sampled input in dynamic window
+    obstacles = prepare_obstacles(cube)
+    yaw_costs = [
+        (w, (1-calc_to_human_cost(w, config)) * config.to_human_cost_gain)
+        for w in ws
+    ]
     for v in vs:
         linear_plan = prepare_linear_motion(xinit[3], v, config)
-        for w in ws:
+        speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
+        for w, to_human_cost in yaw_costs:
 
             ttc_motion = {}
             traj = calc_trajectory_midpoint_vw(
                 xinit, v, w, config, linear_plan, ttc_motion
             )
 
-            to_human_cost = (1-calc_to_human_cost(w,config)) * config.to_human_cost_gain
-
-            speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
-
             ob_cost = calc_obstacle_cost(traj, ob, config) * config.obs_cost_gain
 
             if np.isinf(ob_cost):
                 continue
-            ob_movecost = cal_time(cube, ttc_motion, v, w, config.movetimemin)
-            if ob_movecost<=config.movetimemin:
+            # Check every statically feasible candidate, including lower scores.
+            if cal_time(obstacles, ttc_motion, v, w, config.movetimemin) <= config.movetimemin:
                 continue
-
             final_cost = to_human_cost + speed_cost +ob_cost
-
-            # if log_writer is not None:
-            #     log_writer.writerow([
-            #         round(step, 3),                   # ← 第几次 while
-            #         round(v, 2),
-            #         round(w, 2),
-            #         to_human_cost,
-            #         speed_cost,
-            #         ob_movecost,
-            #         final_cost
-            #     ])
-
-            # search minimum trajectory     ##最大代价
             if max_cost <= final_cost:
                 max_cost = final_cost
                 max_u = [v, w]
                 best_traj = traj
-    # if max_u[0]==0.0:
-    #     max_u[1]=human.angular.z
+
     robot_trajectory.set_trajectory(best_traj)
     human_trajectory.update(xinit, config.human.linear.x, config.human.angular.z, config)
     return max_u
@@ -670,11 +656,14 @@ def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], conf
 
     dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2   # (T, N)
 
-    if np.any(dist2 <= config.robot_radius**2):
+    min_dist2 = dist2.min()
+    # A NaN point must not hide a collision with another, valid point.
+    if (min_dist2 <= config.robot_radius**2
+            or (np.isnan(min_dist2) and np.any(dist2 <= config.robot_radius**2))):
         return float("-Inf")
 
     # 截断：超过 maxdect 的距离不参与计算，等价于原来 minr = config.maxdect 的初始值
-    minr = min(np.sqrt(dist2.min()), config.maxdect)
+    minr = min(math.sqrt(min_dist2), config.maxdect)
 
     return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 

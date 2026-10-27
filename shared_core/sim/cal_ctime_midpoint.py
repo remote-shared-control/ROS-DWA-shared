@@ -14,37 +14,74 @@ or circular arc. This module intentionally has no ROS dependency.
 
 import math
 
-import numpy as np
-
-
 _SPACE_EPS = 1e-10
 _TIME_EPS = 1e-12
+# Broad-phase bounds must err on the side of retaining an obstacle. Account
+# for both the narrow phase's tolerances and roundoff in world coordinates.
+_BOUNDS_SPACE_EPS = 4.0 * _SPACE_EPS
+_BOUNDS_ROUND_EPS = 32.0 * 2.220446049250313e-16
 
 
-def _linear_collision_time(vertices, position, velocity, horizon):
-    """Clip relative point motion against a convex rectangle; None means clear.
+class _Rectangle:
+    """Copied scalar geometry shared by every candidate in one cycle."""
 
-    Boundary contact, including a stationary point on an edge, is a collision.
-    The vertices may be clockwise or counterclockwise.
+    __slots__ = ("edges", "vx", "vy", "bounds", "coordinate_scale")
+
+    def __init__(self, vertices, vx=0.0, vy=0.0):
+        points = tuple((float(p[0]), float(p[1])) for p in vertices)
+        area_twice = sum(
+            points[i][0] * points[(i + 1) % 4][1]
+            - points[(i + 1) % 4][0] * points[i][1]
+            for i in range(4)
+        )
+        orientation = 1.0 if area_twice >= 0.0 else -1.0
+        edges = []
+        for i in range(4):
+            px, py = points[i]
+            qx, qy = points[(i + 1) % 4]
+            dx, dy = qx - px, qy - py
+            length = math.sqrt(dx * dx + dy * dy)
+            if length == 0.0:
+                raise ValueError("Obstacle rectangles must have nonzero edges")
+            tx, ty = dx / length, dy / length
+            edges.append((px, py, tx, ty, -ty, tx, length, orientation))
+        self.edges = tuple(edges)
+        self.vx, self.vy = float(vx), float(vy)
+        self.bounds = (min(p[0] for p in points), max(p[0] for p in points),
+                       min(p[1] for p in points), max(p[1] for p in points))
+        self.coordinate_scale = max(1.0, *(abs(value) for value in self.bounds))
+
+
+class _PreparedObstacles:
+    __slots__ = ("obstacles",)
+
+    def __init__(self, obstacles):
+        self.obstacles = tuple(obstacles)
+
+
+def prepare_obstacles(cube):
+    """Copy obstacle geometry once per planning cycle for reuse by candidates.
+
+    The returned snapshot owns scalar copies of all coordinates and velocities;
+    subsequent updates to ``cube.data`` cannot change a candidate's obstacles.
+    Passing a snapshot again is inexpensive and returns it unchanged.
     """
-    vertices = np.asarray(vertices, dtype=float)
-    position = np.asarray(position, dtype=float)
-    velocity = np.asarray(velocity, dtype=float)
-    area_twice = sum(
-        vertices[i, 0] * vertices[(i + 1) % 4, 1]
-        - vertices[(i + 1) % 4, 0] * vertices[i, 1]
-        for i in range(4)
+    if isinstance(cube, _PreparedObstacles):
+        return cube
+    rows = cube.data
+    return _PreparedObstacles(
+        () if rows is None else
+        (_Rectangle(row[1:5], row[5], row[6]) for row in rows)
     )
-    orientation = 1.0 if area_twice >= 0.0 else -1.0
+
+
+def _clip_rectangle(rectangle, px, py, vx, vy, horizon, shift_x=0.0, shift_y=0.0):
+    """Scalar half-plane clipping; normals and edge lengths are precomputed."""
     enter, leave = 0.0, float(horizon)
-    for i in range(4):
-        edge = vertices[(i + 1) % 4] - vertices[i]
-        length = float(np.linalg.norm(edge))
-        if length == 0.0:
-            raise ValueError("Obstacle rectangles must have nonzero edges")
-        normal = orientation * np.array([-edge[1], edge[0]]) / length
-        distance = float(np.dot(position - vertices[i], normal))
-        rate = float(np.dot(velocity, normal))
+    for ex, ey, _, _, nx, ny, _, orientation in rectangle.edges:
+        distance = ((px - (ex + shift_x)) * nx
+                    + (py - (ey + shift_y)) * ny) * orientation
+        rate = (vx * nx + vy * ny) * orientation
         if rate == 0.0:
             if distance < -_SPACE_EPS:
                 return None
@@ -59,6 +96,17 @@ def _linear_collision_time(vertices, position, velocity, horizon):
     if leave < -_TIME_EPS or enter > horizon + _TIME_EPS:
         return None
     return min(float(horizon), max(0.0, enter))
+
+
+def _linear_collision_time(vertices, position, velocity, horizon):
+    """Clip relative point motion against a convex rectangle; None means clear.
+
+    Boundary contact, including a stationary point on an edge, is a collision.
+    The vertices may be clockwise or counterclockwise.
+    """
+    rectangle = vertices if isinstance(vertices, _Rectangle) else _Rectangle(vertices)
+    return _clip_rectangle(rectangle, float(position[0]), float(position[1]),
+                           float(velocity[0]), float(velocity[1]), horizon)
 
 
 def _boundary_roots(phi, omega, radius, obstacle_vy, initial_y, horizon):
@@ -121,57 +169,99 @@ def _boundary_roots(phi, omega, radius, obstacle_vy, initial_y, horizon):
         left, f_left = right, f_right
 
 
-def _constant_collision_time(vertices, obstacle_velocity, pose, v, w, horizon):
+def _constant_collision_time(vertices, obstacle_velocity, pose, v, w, horizon,
+                             shift_x=0.0, shift_y=0.0):
     """Solve the constant-speed phase, measured from its own starting pose."""
-    vertices = np.asarray(vertices, dtype=float)
-    position = np.asarray(pose[:2], dtype=float)
+    rectangle = vertices if isinstance(vertices, _Rectangle) else _Rectangle(vertices)
+    v, w = float(v), float(w)
+    px, py = float(pose[0]), float(pose[1])
     theta = float(pose[2])
-    obstacle_velocity = np.asarray(obstacle_velocity, dtype=float)
-    if _linear_collision_time(vertices, position, (0.0, 0.0), 0.0) is not None:
+    ovx, ovy = float(obstacle_velocity[0]), float(obstacle_velocity[1])
+    if _clip_rectangle(rectangle, px, py, 0.0, 0.0, 0.0, shift_x, shift_y) is not None:
         return 0.0
     if w == 0.0 or v == 0.0:
-        robot_velocity = np.array([v * math.cos(theta), v * math.sin(theta)])
-        return _linear_collision_time(
-            vertices, position, robot_velocity - obstacle_velocity, horizon
-        )
+        return _clip_rectangle(rectangle, px, py, v * math.cos(theta) - ovx,
+                               v * math.sin(theta) - ovy, horizon, shift_x, shift_y)
 
     signed_radius = v / w
     radius = abs(signed_radius)
     # c = (x,y) + R(theta + pi/2) (v/w, 0), evaluated at t_constant.
-    center = position + signed_radius * np.array([-math.sin(theta), math.cos(theta)])
-    radial = position - center
+    sin_theta, cos_theta = math.sin(theta), math.cos(theta)
+    radial_x = px - (px - signed_radius * sin_theta)
+    radial_y = py - (py + signed_radius * cos_theta)
     # For tiny radii compared with the world coordinates, subtraction cannot
     # resolve the center accurately. The analytic radial direction is exact.
-    if radius < 1e-4 * max(1.0, float(np.max(np.abs(position)))):
-        radial = signed_radius * np.array([math.sin(theta), -math.cos(theta)])
+    if radius < 1e-4 * max(1.0, abs(px), abs(py)):
+        radial_x, radial_y = signed_radius * sin_theta, -signed_radius * cos_theta
     earliest = None
-    for i in range(4):
-        p, q = vertices[i], vertices[(i + 1) % 4]
-        edge = q - p
-        edge_length = float(np.linalg.norm(edge))
-        tangent = edge / edge_length
-        normal = np.array([-tangent[1], tangent[0]])
-        phi = math.atan2(float(np.dot(radial, normal)), float(np.dot(radial, tangent)))
+    for ex, ey, tx, ty, nx, ny, edge_length, _ in rectangle.edges:
+        phi = math.atan2(radial_x * nx + radial_y * ny,
+                         radial_x * tx + radial_y * ty)
         # R(-psi) transforms positions and obstacle velocity into the frame
         # centered on c. Compute their differences before subtracting c to
         # avoid cancellation for very large turning radii.
-        velocity_local = np.array([
-            np.dot(obstacle_velocity, tangent), np.dot(obstacle_velocity, normal)
-        ])
-        initial_x = float(np.dot(position - p, tangent))
-        initial_y = float(np.dot(position - p, normal))
+        velocity_x = ovx * tx + ovy * ty
+        velocity_y = ovx * nx + ovy * ny
+        dx, dy = px - (ex + shift_x), py - (ey + shift_y)
+        initial_x = dx * tx + dy * ty
+        initial_y = dx * nx + dy * ny
         # initial_y = radius*sin(phi) - dot(p-center, normal), evaluated
         # without subtracting nearly equal large values. initial_x likewise
         # places the transformed edge interval at [0, edge_length].
         edge_horizon = horizon if earliest is None else earliest
-        for t in _boundary_roots(phi, w, radius, velocity_local[1], initial_y, edge_horizon):
+        for t in _boundary_roots(phi, w, radius, velocity_y, initial_y, edge_horizon):
             half_angle = 0.5 * w * t
             x = (initial_x - 2.0 * radius * math.sin(phi + half_angle)
-                 * math.sin(half_angle) - velocity_local[0] * t)
+                 * math.sin(half_angle) - velocity_x * t)
             if -_SPACE_EPS <= x <= edge_length + _SPACE_EPS:
                 earliest = t
                 break
     return earliest
+
+
+def _constant_swept_bounds(pose, v, w, horizon):
+    """Conservative world AABB for a line or an entire constant-speed arc.
+
+    Each arc coordinate differs from its endpoint chord by at most
+    abs(v*w)*horizon**2/8, since that bounds its second derivative. Intersect
+    this box with the independent distance-from-start bound. Both bounds
+    contain every point, including arcs spanning more than one revolution.
+    The endpoint uses a sine difference, avoiding large turning centers.
+    """
+    px, py, theta = float(pose[0]), float(pose[1]), float(pose[2])
+    v, w = float(v), float(w)
+    half_angle = 0.5 * w * horizon
+    distance = v * horizon
+    travel = distance * (math.sin(half_angle) / half_angle if half_angle else 1.0)
+    end_x = px + travel * math.cos(theta + half_angle)
+    end_y = py + travel * math.sin(theta + half_angle)
+    pad = abs(v * w) * horizon * horizon / 8.0
+    reach = abs(distance)
+    if w != 0.0:
+        reach = min(reach, 2.0 * abs(v / w))
+    return (max(min(px, end_x) - pad, px - reach),
+            min(max(px, end_x) + pad, px + reach),
+            max(min(py, end_y) - pad, py - reach),
+            min(max(py, end_y) + pad, py + reach))
+
+
+def _swept_bounds_overlap(robot_bounds, robot_scale, robot_speed, obstacle,
+                          start, horizon):
+    """Reject only strictly disjoint robot/translated-obstacle swept AABBs."""
+    shift_x, shift_y = obstacle.vx * start, obstacle.vy * start
+    dx, dy = obstacle.vx * horizon, obstacle.vy * horizon
+    xmin, xmax, ymin, ymax = obstacle.bounds
+    margin = (_BOUNDS_SPACE_EPS
+              + _BOUNDS_ROUND_EPS * (robot_scale + obstacle.coordinate_scale
+                                     + abs(shift_x) + abs(shift_y)
+                                     + abs(dx) + abs(dy))
+              + _TIME_EPS * (robot_speed + abs(obstacle.vx) + abs(obstacle.vy)))
+    # Equality and near-equality reach the original continuous narrow phase;
+    # in particular, an edge/corner touch at the horizon is never rejected.
+    return not (robot_bounds[1] < xmin + shift_x + min(0.0, dx) - margin
+                or robot_bounds[0] > xmax + shift_x + max(0.0, dx) + margin
+                or robot_bounds[3] < ymin + shift_y + min(0.0, dy) - margin
+                or robot_bounds[2] > ymax + shift_y + max(0.0, dy) + margin)
 
 
 def cal_time(cube, transition, v, w, T):
@@ -180,7 +270,8 @@ def cal_time(cube, transition, v, w, T):
     Parameters
     ----------
     cube : object
-        Its ``data`` contains already inflated translating rectangles.
+        Its ``data`` contains already inflated translating rectangles, or it
+        is a reusable snapshot returned by ``prepare_obstacles``.
     transition : dict
         ``t_constant = max(tv, tw)``; ``times`` starts at 0 and ends exactly at
         ``min(t_constant, T)``; ``states`` contains corresponding midpoint-vw
@@ -199,8 +290,8 @@ def cal_time(cube, transition, v, w, T):
     if T < 0.0:
         raise ValueError("T must be nonnegative")
     no_collision = T + 1.0
-    cube_data = cube.data
-    if cube_data is None or len(cube_data) == 0:
+    obstacles = prepare_obstacles(cube).obstacles
+    if not obstacles:
         return no_collision
     times = transition["times"]
     states = transition["states"]
@@ -211,25 +302,22 @@ def cal_time(cube, transition, v, w, T):
             or abs(times[-1] - min(t_constant, T)) > 1e-9
             or any(b <= a for a, b in zip(times, times[1:]))):
         raise ValueError("Transition times must cover [0, min(t_constant, T)]")
-    obstacles = [
-        (np.asarray(row[1:5], dtype=float), np.asarray(row[5:7], dtype=float))
-        for row in cube_data
-    ]
-    initial_position = np.asarray(states[0][:2], dtype=float)
-    for vertices, _ in obstacles:
-        if _linear_collision_time(vertices, initial_position, (0.0, 0.0), 0.0) is not None:
+    initial_x, initial_y = float(states[0][0]), float(states[0][1])
+    for obstacle in obstacles:
+        if _clip_rectangle(obstacle, initial_x, initial_y, 0.0, 0.0, 0.0) is not None:
             return 0.0
 
     for i in range(len(times) - 1):
         start, end = float(times[i]), float(times[i + 1])
         duration = end - start
-        position = np.asarray(states[i][:2], dtype=float)
-        velocity = (np.asarray(states[i + 1][:2], dtype=float) - position) / duration
+        px, py = float(states[i][0]), float(states[i][1])
+        vx = (float(states[i + 1][0]) - px) / duration
+        vy = (float(states[i + 1][1]) - py) / duration
         earliest = None
-        for vertices, obstacle_velocity in obstacles:
-            hit = _linear_collision_time(
-                vertices, position - obstacle_velocity * start,
-                velocity - obstacle_velocity, duration,
+        for obstacle in obstacles:
+            hit = _clip_rectangle(
+                obstacle, px - obstacle.vx * start, py - obstacle.vy * start,
+                vx - obstacle.vx, vy - obstacle.vy, duration,
             )
             if hit is not None and (earliest is None or hit < earliest):
                 earliest = hit
@@ -240,10 +328,20 @@ def cal_time(cube, transition, v, w, T):
         return no_collision
     remaining = T - t_constant
     result = no_collision
-    for vertices, obstacle_velocity in obstacles:
+    robot_bounds = _constant_swept_bounds(states[-1], v, w, remaining)
+    robot_scale = max(1.0, *(abs(value) for value in robot_bounds))
+    robot_speed = abs(float(v))
+    for obstacle in obstacles:
+        # Once a hit is known, a later obstacle only matters up to that time.
+        # The full-horizon robot box remains a conservative bound for this
+        # shorter interval; obstacle motion can use the tighter interval.
+        horizon = min(remaining, result - t_constant)
+        if not _swept_bounds_overlap(robot_bounds, robot_scale, robot_speed,
+                                     obstacle, t_constant, horizon):
+            continue
         hit = _constant_collision_time(
-            vertices + obstacle_velocity * t_constant,
-            obstacle_velocity, states[-1], v, w, remaining,
+            obstacle, (obstacle.vx, obstacle.vy), states[-1], v, w, horizon,
+            obstacle.vx * t_constant, obstacle.vy * t_constant,
         )
         if hit is not None:
             result = min(result, t_constant + hit)
