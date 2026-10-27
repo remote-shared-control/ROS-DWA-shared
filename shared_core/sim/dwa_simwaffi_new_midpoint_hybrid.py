@@ -500,7 +500,7 @@ def calc_trajectory_midpoint_vw(xinit, v, w, config, linear_plan=None,
     """Return the base trajectory and optionally retain the TTC transition.
 
     ttc_motion receives times/states at every internal midpoint boundary up
-    to min(max(t_v, t_w), predict_time). These include the exact switch pose,
+    to min(max(t_v, t_w), movetimemin). These include the exact switch pose,
     even when it is absent from the static-obstacle/RViz sampling grid.
     """
     x = [float(value) for value in xinit]
@@ -521,7 +521,7 @@ def calc_trajectory_midpoint_vw(xinit, v, w, config, linear_plan=None,
 
     if ttc_motion is not None:
         t_constant = max(t_v, t_w)
-        transition_end = min(t_constant, config.predict_time)
+        transition_end = min(t_constant, config.movetimemin)
         ttc_motion.update(times=[0.0], states=[x[:]], t_constant=t_constant)
 
         # Static and dynamic horizons are independent. Extend only the TTC
@@ -628,7 +628,7 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
 
             if np.isinf(ob_cost):
                 continue
-            ob_movecost = cal_time(cube, ttc_motion, v, w, config.predict_time)
+            ob_movecost = cal_time(cube, ttc_motion, v, w, config.movetimemin)
             if config.predict_time<=config.movetimemin:
                 if ob_movecost<config.movetimemin:
                     continue

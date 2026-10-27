@@ -175,7 +175,7 @@ def _constant_collision_time(vertices, obstacle_velocity, pose, v, w, horizon):
 
 
 def cal_time(cube, transition, v, w, T):
-    """Return TTC from candidate evaluation time; no collision returns T.
+    """Return TTC from candidate evaluation time; no collision returns T + 1.
 
     Parameters
     ----------
@@ -188,7 +188,8 @@ def cal_time(cube, transition, v, w, T):
     v, w : float
         Candidate speeds reached at t_constant.
     T : float
-        Prediction horizon measured from the initial state, in seconds.
+        Prediction horizon measured from the initial state, in seconds;
+        the controller supplies config.movetimemin.
 
     先逐时间段检查过渡轨迹。某段碰撞时，取该段所有障碍物的最早 TTC，
     立即返回。过渡阶段安全时，才把障碍物平移到 t_constant，使用该时刻
@@ -197,9 +198,10 @@ def cal_time(cube, transition, v, w, T):
     T = float(T)
     if T < 0.0:
         raise ValueError("T must be nonnegative")
+    no_collision = T + 1.0
     cube_data = cube.data
     if cube_data is None or len(cube_data) == 0:
-        return T
+        return no_collision
     times = transition["times"]
     states = transition["states"]
     t_constant = float(transition["t_constant"])
@@ -235,9 +237,9 @@ def cal_time(cube, transition, v, w, T):
             return min(T, start + earliest)
 
     if t_constant >= T:
-        return T
+        return no_collision
     remaining = T - t_constant
-    result = T
+    result = no_collision
     for vertices, obstacle_velocity in obstacles:
         hit = _constant_collision_time(
             vertices + obstacle_velocity * t_constant,

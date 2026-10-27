@@ -17,7 +17,8 @@ SIM_DIR = Path(__file__).resolve().parents[1]
 
 def load_motion(filename):
     parsed = ast.parse((SIM_DIR / filename).read_text(encoding="utf-8"))
-    names = {"motion_midpoint", "prepare_linear_motion", "calc_trajectory_midpoint_vw"}
+    names = {"motion_midpoint", "prepare_linear_motion", "calc_trajectory_midpoint_vw",
+             "calc_final_input"}
     body = [node for node in parsed.body
             if isinstance(node, ast.FunctionDef) and node.name in names]
     namespace = {"np": np, "math": math, "bisect_left": bisect_left}
@@ -29,7 +30,7 @@ def config_for(static_horizon=0.8, ttc_horizon=3.0):
     times = tuple(np.append(np.arange(0.0, static_horizon, 0.4), static_horizon))
     return SimpleNamespace(
         dt=0.4, max_accel=1.0, max_dyawrate=1.0,
-        predict_time_static=static_horizon, predict_time=ttc_horizon,
+        predict_time_static=static_horizon, predict_time=7.0, movetimemin=ttc_horizon,
         trajectory_times=times,
         trajectory_steps=tuple((b, b - a, (a + b) / 2, True)
                                for a, b in zip(times, times[1:])),
@@ -115,6 +116,27 @@ class HybridTrajectoryTests(unittest.TestCase):
         np.testing.assert_allclose(data["states"][-1], [0.0162, 0, 0.0162, 0.18, 0.18])
         self.assertEqual(data["t_constant"], 1.0)
 
+    def test_candidate_evaluation_uses_movetimemin_as_ttc_horizon(self):
+        config = config_for(ttc_horizon=0.18)
+        config.human = SimpleNamespace(
+            linear=SimpleNamespace(x=1.0), angular=SimpleNamespace(z=0.8))
+        config.to_human_cost_gain = config.speed_cost_gain = config.obs_cost_gain = 1.0
+        config.move_obs_gain = 1.0
+        config.min_speed, config.max_speed = -1.0, 1.0
+        solver = mock.Mock(wraps=self.solver.cal_time)
+        with mock.patch.dict(self.hybrid, {
+                "cal_time": solver,
+                "calc_to_human_cost": mock.Mock(return_value=0.0),
+                "calc_obstacle_cost": mock.Mock(return_value=1.0),
+                "robot_trajectory": mock.Mock(), "human_trajectory": mock.Mock()}):
+            result = self.hybrid["calc_final_input"](
+                np.zeros(5), [0.0, 0.0], [1.0], [0.8], config, None,
+                SimpleNamespace(data=[rectangle(20, 21, 20, 21)]))
+        self.assertEqual(result, [1.0, 0.8])
+        solver.assert_called_once()
+        self.assertEqual(solver.call_args.args[-1], config.movetimemin)
+        self.assertEqual(solver.call_args.args[1]["times"][-1], config.movetimemin)
+
     def test_transition_after_static_horizon_continues_acceleration(self):
         config = config_for(static_horizon=0.8)
         data = {}
@@ -155,7 +177,7 @@ class HybridTrajectoryTests(unittest.TestCase):
                 self.assertAlmostEqual(data["times"][-1], data["t_constant"])
                 self.assertEqual(self.solver.cal_time(
                     SimpleNamespace(data=[rectangle(20, 21, 20, 21)]),
-                    data, v, w, config.predict_time), config.predict_time)
+                    data, v, w, config.movetimemin), config.movetimemin + 1.0)
 
 
 class HybridCollisionTests(unittest.TestCase):
@@ -200,7 +222,32 @@ class HybridCollisionTests(unittest.TestCase):
         with mock.patch.object(self.solver, "_constant_collision_time",
                                side_effect=AssertionError("constant phase evaluated")):
             self.assertEqual(self.solve([rectangle(2, 3, -1, 1)], motion,
-                                        horizon=0.25), 0.25)
+                                        horizon=0.25), 1.25)
+
+    def test_ramp_contact_at_horizon_differs_from_contact_after_horizon(self):
+        motion = transition([0, 0.25], [(0, 0), (0.25, 0)], constant_time=1.0)
+        self.assertEqual(self.solve([rectangle(0.25, 0.3, -0.1, 0.1)], motion,
+                                    horizon=0.25), 0.25)
+        self.assertEqual(self.solve([rectangle(0.2501, 0.3, -0.1, 0.1)], motion,
+                                    horizon=0.25), 1.25)
+
+    def test_constant_contact_at_horizon_differs_from_contact_after_horizon(self):
+        motion = transition([0, 1], [(0, 0), (0.5, 0)])
+        self.assertEqual(self.solve([rectangle(4.5, 4.6, -0.1, 0.1)], motion), 5.0)
+        self.assertEqual(self.solve([rectangle(4.5001, 4.6, -0.1, 0.1)], motion), 6.0)
+
+    def test_clear_ramp_and_constant_phase_return_horizon_plus_one(self):
+        motion = transition([0, 1], [(0, 0), (0.5, 0)])
+        for w in (0.0, 1.0):
+            with self.subTest(w=w):
+                self.assertEqual(self.solve([rectangle(20, 21, 20, 21)], motion,
+                                            w=w), 6.0)
+
+    def test_zero_horizon_distinguishes_initial_contact_from_clear(self):
+        motion = transition([0], [(0, 0)], constant_time=1.0)
+        self.assertEqual(self.solve([rectangle(0, 1, -1, 1)], motion, horizon=0), 0.0)
+        self.assertEqual(self.solve([rectangle(1, 2, -1, 1)], motion, horizon=0), 1.0)
+        self.assertEqual(self.solve([], motion, horizon=0), 1.0)
 
     def test_stationary_robot_can_be_hit_by_moving_obstacle(self):
         self.assertAlmostEqual(self.solve([rectangle(1, 1.2, -0.1, 0.1, vx=-1)],
@@ -223,6 +270,15 @@ class HybridCollisionTests(unittest.TestCase):
         self.assertAlmostEqual(self.solve([rectangle(1, 1.2, 0.9, 1.1)],
                                          transition([0], [(0, 0)]), w=1), math.pi / 2, places=7)
 
+    def test_circular_contact_at_horizon_is_not_the_clear_sentinel(self):
+        horizon = math.pi / 2
+        motion = transition([0], [(0, 0)])
+        row = rectangle(1, 1.2, 0.9, 1.1)
+        self.assertAlmostEqual(self.solve([row], motion, w=1, horizon=horizon),
+                               horizon, places=7)
+        self.assertEqual(self.solve([row], motion, w=1, horizon=horizon - 0.01),
+                         horizon - 0.01 + 1.0)
+
     def test_rotated_obstacle_and_nonzero_initial_pose(self):
         theta, position = 0.7, np.array([3.0, -2.0])
         rotation = np.array([[math.cos(theta), -math.sin(theta)],
@@ -239,11 +295,11 @@ class HybridCollisionTests(unittest.TestCase):
         self.assertAlmostEqual(self.solve([row], transition([0], [(0, 0)]), w=1),
                                contact_time, places=7)
 
-    def test_no_obstacles_or_no_intersection_returns_horizon(self):
+    def test_no_obstacles_or_no_intersection_returns_horizon_plus_one(self):
         motion = transition([0], [(0, 0)])
         for rows in (None, [], [rectangle(20, 21, 20, 21)]):
             with self.subTest(rows=rows):
-                self.assertEqual(self.solve(rows, motion, w=1), 5.0)
+                self.assertEqual(self.solve(rows, motion, w=1), 6.0)
 
 
 if __name__ == "__main__":

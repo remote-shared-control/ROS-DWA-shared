@@ -118,16 +118,16 @@ within a substep use linear interpolation of its midpoint-generated positions.
 If the transition is collision-free, advance each rectangle by its velocity
 times `t_constant`, determine the rotation center from the robot's switch
 pose, and transform the rectangle edges into the local coordinate frames.
-Solve the boundary equations over `predict_time - t_constant` and add
+Solve the boundary equations over `config.movetimemin - t_constant` and add
 `t_constant` to the earliest valid root. Straight-line and stationary-center
 motion use relative linear intersection. The obstacle model retains constant
 translation and fixed orientation. Contact counts as collision.
 
-If the dynamic horizon ends during acceleration, check only the transition
-through that horizon. No collision returns `predict_time`, as in the original
-controller. Static-obstacle evaluation and RViz retain the existing midpoint
-trajectory and static prediction horizon. The two original programs are
-unchanged.
+The dynamic prediction horizon is `config.movetimemin`. If it ends during
+acceleration, check only the transition through that horizon. With no collision
+or no obstacles, the solver returns `config.movetimemin + 1`. Static-obstacle
+evaluation and RViz retain the existing midpoint trajectory and static prediction
+horizon. The two original programs are unchanged.
 
 ## LIMO simulation: repeated wheel TF timestamps
 
