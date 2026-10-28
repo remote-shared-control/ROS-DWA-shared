@@ -114,7 +114,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.21  # [m]
+        self.robot_radius = 0.225  # [m]
         self.obs_radius =0.15
         self.x = 0.0
         self.y = 0.0

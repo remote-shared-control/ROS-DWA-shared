@@ -139,7 +139,7 @@ class Config():
         # #############################
         self.robot_radius = 0.225  # [m]
 
-        self.cube_half_size=0.16
+        self.cube_half_size=0.15
 
         
         self.x = 0.0

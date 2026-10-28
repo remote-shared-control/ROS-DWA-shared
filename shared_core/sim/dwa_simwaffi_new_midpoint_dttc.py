@@ -131,7 +131,7 @@ class Config():
         self.robot_radius = 0.225 # [m]
         self.robot_radius_static = 0.21 # [m]
 
-        self.cube_half_size=0.16
+        self.cube_half_size=0.15
         self.obs_radius = self.cube_half_size  # Circular moving obstacle radius.
 
         self.x = 0.0
