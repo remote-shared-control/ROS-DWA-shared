@@ -3,8 +3,9 @@
 
 ``cube.data`` 沿用 cal_ctime.py 的格式：
     [id, vertex0, vertex1, vertex2, vertex3, obstacle_vx, obstacle_vy]
-顶点必须按顺序给出，并且已经膨胀了机器人半径。障碍物在预测期间只做
-恒定速度的平移，不改变朝向；机器人因此作为点进行碰撞检测。
+顶点必须按顺序给出，并且已经按 robot_radius_cal 膨胀。折线过渡阶段
+额外按 robot_radius_transition 与该半径的差值外移边界，匀速方程阶段
+保持原矩形。障碍物只做恒速平移；机器人作为点进行碰撞检测。
 
 The transition samples come from the planner's existing midpoint-vw integrator.
 Between samples, collision checks use continuous relative line segments. Once
@@ -53,10 +54,11 @@ class _Rectangle:
 
 
 class _PreparedObstacles:
-    __slots__ = ("obstacles",)
+    __slots__ = ("obstacles", "transition_padding")
 
-    def __init__(self, obstacles):
+    def __init__(self, obstacles, transition_padding=0.0):
         self.obstacles = tuple(obstacles)
+        self.transition_padding = float(transition_padding)
 
 
 def prepare_obstacles(cube):
@@ -65,22 +67,31 @@ def prepare_obstacles(cube):
     The returned snapshot owns scalar copies of all coordinates and velocities;
     subsequent updates to ``cube.data`` cannot change a candidate's obstacles.
     Passing a snapshot again is inexpensive and returns it unchanged.
+    CubeReader supplies two radii: its vertices already include robot_radius_cal;
+    only transition clipping adds robot_radius_transition - robot_radius_cal.
+    Plain data-only inputs retain their existing, already-inflated geometry.
     """
     if isinstance(cube, _PreparedObstacles):
         return cube
     rows = cube.data
+    transition_padding = 0.0
+    if hasattr(cube, "robot_radius_transition"):
+        transition_padding = (float(cube.robot_radius_transition)
+                              - float(cube.robot_radius_cal))
     return _PreparedObstacles(
         () if rows is None else
-        (_Rectangle(row[1:5], row[5], row[6]) for row in rows)
+        (_Rectangle(row[1:5], row[5], row[6]) for row in rows),
+        transition_padding,
     )
 
 
-def _clip_rectangle(rectangle, px, py, vx, vy, horizon, shift_x=0.0, shift_y=0.0):
-    """Scalar half-plane clipping; normals and edge lengths are precomputed."""
+def _clip_rectangle(rectangle, px, py, vx, vy, horizon, shift_x=0.0, shift_y=0.0,
+                    padding=0.0):
+    """Clip against cached half-planes; positive padding moves edges outward."""
     enter, leave = 0.0, float(horizon)
     for ex, ey, _, _, nx, ny, _, orientation in rectangle.edges:
         distance = ((px - (ex + shift_x)) * nx
-                    + (py - (ey + shift_y)) * ny) * orientation
+                    + (py - (ey + shift_y)) * ny) * orientation + padding
         rate = (vx * nx + vy * ny) * orientation
         if rate == 0.0:
             if distance < -_SPACE_EPS:
@@ -272,6 +283,8 @@ def cal_time(cube, transition, v, w, T):
     cube : object
         Its ``data`` contains already inflated translating rectangles, or it
         is a reusable snapshot returned by ``prepare_obstacles``.
+        When supplied, robot_radius_transition changes only the transition
+        radius; the constant phase retains the robot_radius_cal geometry.
     transition : dict
         ``t_constant = max(tv, tw)``; ``times`` starts at 0 and ends exactly at
         ``min(t_constant, T)``; ``states`` contains corresponding midpoint-vw
@@ -290,7 +303,8 @@ def cal_time(cube, transition, v, w, T):
     if T < 0.0:
         raise ValueError("T must be nonnegative")
     no_collision = T + 1.0
-    obstacles = prepare_obstacles(cube).obstacles
+    prepared = prepare_obstacles(cube)
+    obstacles = prepared.obstacles
     if not obstacles:
         return no_collision
     times = transition["times"]
@@ -302,9 +316,11 @@ def cal_time(cube, transition, v, w, T):
             or abs(times[-1] - min(t_constant, T)) > 1e-9
             or any(b <= a for a, b in zip(times, times[1:]))):
         raise ValueError("Transition times must cover [0, min(t_constant, T)]")
+    transition_padding = prepared.transition_padding if t_constant > 0.0 else 0.0
     initial_x, initial_y = float(states[0][0]), float(states[0][1])
     for obstacle in obstacles:
-        if _clip_rectangle(obstacle, initial_x, initial_y, 0.0, 0.0, 0.0) is not None:
+        if _clip_rectangle(obstacle, initial_x, initial_y, 0.0, 0.0, 0.0,
+                           padding=transition_padding) is not None:
             return 0.0
 
     for i in range(len(times) - 1):
@@ -318,6 +334,7 @@ def cal_time(cube, transition, v, w, T):
             hit = _clip_rectangle(
                 obstacle, px - obstacle.vx * start, py - obstacle.vy * start,
                 vx - obstacle.vx, vy - obstacle.vy, duration,
+                padding=transition_padding,
             )
             if hit is not None and (earliest is None or hit < earliest):
                 earliest = hit

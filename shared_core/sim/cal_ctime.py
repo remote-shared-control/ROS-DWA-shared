@@ -16,6 +16,7 @@ class CubeReader:
     def __init__(self, config):
 
         self.robot_radius_cal = 0.21
+        self.robot_radius_transition = 0.225  # Midpoint TTC transition only.
         self.config = config
         self.threshold=5.0
         self.data = None

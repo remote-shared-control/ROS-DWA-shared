@@ -151,7 +151,8 @@ def run_cycle(namespace, calls, static_points, rectangles):
     config.human.linear.x = 0.8
     config.human.angular.z = 0.12
     state = [0.0, 0.0, 0.0, 0.35, 0.15]
-    cube = SimpleNamespace(data=rectangles)
+    cube = SimpleNamespace(data=rectangles, robot_radius_cal=0.21,
+                           robot_radius_transition=0.225)
     vs, ws = namespace["calc_dynamic_window"](state, config)
     calls["cal_time"] = 0
     calls["static_feasible"] = 0

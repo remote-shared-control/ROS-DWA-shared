@@ -115,6 +115,13 @@ each consecutive segment against the translating, already inflated obstacle
 rectangles and return the first collision time immediately. Collision times
 within a substep use linear interpolation of its midpoint-generated positions.
 
+`CubeReader.robot_radius_transition = 0.225` m is used only for the midpoint
+transition's polyline collision checks. Obstacle vertices remain inflated by
+`CubeReader.robot_radius_cal` (currently 0.21 m); transition checks offset each
+edge outward by the difference between the radii. Constant-speed equation
+checks keep the original `robot_radius_cal` geometry, including when both
+candidate speeds are already reached and there is no transition.
+
 If the transition is collision-free, advance each rectangle by its velocity
 times `t_constant`, determine the rotation center from the robot's switch
 pose, and transform the rectangle edges into the local coordinate frames.
