@@ -272,6 +272,7 @@ def find_min_tc_fast(phi, omega, v_py_prime, p_y_prime,
     方程2: sin(phi + omega * tc) - v_py_prime * tc - p_y_prime + m = 0
     
     条件: p_x_prime < cos(phi + omega * tc) - v_px_prime * tc < q_x_prime
+    T 内无有效解时返回 T + 1；恰好在 T 的接触返回 T。
     """
     
     # 自动计算采样次数: 4倍余量确保精度
@@ -330,7 +331,13 @@ def find_min_tc_fast(phi, omega, v_py_prime, p_y_prime,
         f1_prev = base_curr
         f2_prev = base_curr + m
     
-    return T
+    # The sign-change search does not detect a root exactly at its last sample.
+    end_base = sin(phi + omega * T) - v_py_prime * T - p_y_prime
+    end_x = cos(phi + omega * T) - v_px_prime * T
+    if (p_x_prime <= end_x <= q_x_prime
+            and (abs(end_base) <= 1e-12 or abs(end_base + m) <= 1e-12)):
+        return T
+    return T + 1.0
 
 
 def point_in_quad(vertices: tuple, x: float, y: float) -> bool:
@@ -401,7 +408,7 @@ def compute_intersection_time(
     ----
     float
         最早相交时间
-        无相交返回 T
+        无相交返回 T + 1；恰好在 T 相交返回 T
     """
 
     EPS = 1e-9
@@ -410,9 +417,10 @@ def compute_intersection_time(
 
     # 相对静止
     if abs(vx) < EPS and abs(vy) < EPS:
-        return T
+        return T + 1.0
 
     min_t = T
+    found_hit = False
 
     # 四条边
     for i in range(4):
@@ -458,8 +466,9 @@ def compute_intersection_time(
 
             t_hit = max(0.0, t_enter)
 
-            if t_hit < min_t:
+            if t_hit <= min_t:
                 min_t = t_hit
+                found_hit = True
 
             continue
 
@@ -477,6 +486,7 @@ def compute_intersection_time(
                 0.0 <= s_num <= det
             ):
                 min_t = t_num / det
+                found_hit = True
 
         else:
 
@@ -486,20 +496,22 @@ def compute_intersection_time(
                 det <= s_num <= 0.0
             ):
                 min_t = t_num / det
+                found_hit = True
 
-    return min_t
+    return min_t if found_hit else T + 1.0
 
 
 def cal_time(cube,x, y, theta, v, w, T):
+        """Return earliest detected TTC in [0, T]; no collision returns T + 1."""
 
         # 直接使用 cube.data（不再通过 get_snapshot 复制）
         cube_data = cube.data
         if cube_data is None:
-            return T
+            return T + 1.0
         else:
             if w==0 or v==0:
 
-                minre_mid= T
+                minre_mid= T + 1.0
                 # 机器人速度，同样保留三位小数
                 robot_vx = round(v * math.cos(theta), 3)
                 robot_vy = round(v * math.sin(theta), 3)
@@ -518,7 +530,7 @@ def cal_time(cube,x, y, theta, v, w, T):
             else:
 
                 r,c=get_rotation_center(x, y, theta, v, w)
-                minre_mid= T
+                minre_mid= T + 1.0
                 for row in cube_data:   # self.data 中每一行代表一个障碍物
                     # 四个顶点（每个点都是 tuple: (x, y)）
                     vertices=(row[1],row[2],row[3],row[4])

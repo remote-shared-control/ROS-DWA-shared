@@ -19,7 +19,8 @@ from sensor_msgs.msg import LaserScan
 from tf.transformations import euler_from_quaternion
 from std_msgs.msg import Float32
 from visualization_msgs.msg import Marker
-from cal_ctime import *
+from cal_ctime import CubeReader
+from cal_ctime_midpoint import cal_time_constant as cal_time, prepare_obstacles
 import numpy as np
 import signal
 import sys
@@ -108,7 +109,7 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 2.0 #lower = faster
+        self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
         self.move_obs_gain = 1.0
         # if args.param == 3:
@@ -116,9 +117,9 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.21  # [m]
+        self.robot_radius = 0.225  # [m]
 
-        self.cube_half_size=0.16
+        self.cube_half_size=0.15
 
         
         self.x = 0.0
@@ -423,32 +424,28 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
     max_u = u
     max_u[0] = 0.0 #no way can be chosen
     max_u[1] = config.human.angular.z
-    # evaluate all trajectory with sampled input in dynamic window
+    obstacles = prepare_obstacles(cube)
+    ttc_x, ttc_y, ttc_theta = config.x, config.y, config.th
+    yaw_costs = [
+        (w, (1-calc_to_human_cost(w, config)) * config.to_human_cost_gain)
+        for w in ws
+    ]
     for v in vs:
-        for w in ws:
+        speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
+        for w, to_human_cost in yaw_costs:
 
             traj = calc_trajectory(xinit, v, w, config)
-
-            to_human_cost = (1-calc_to_human_cost(w,config)) * config.to_human_cost_gain
-
-            speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
 
             ob_cost = calc_obstacle_cost(traj, ob, config) * config.obs_cost_gain
 
             if np.isinf(ob_cost):
                 continue
-            ob_movecost=cal_time(cube,config.x, config.y, config.th, v, w, config.predict_time)
-            if config.predict_time<=config.movetimemin:
-                if ob_movecost<config.movetimemin:
-                    continue
-                ob_movecost=0
-            else:
-                ob_movecost=config.move_obs_gain*(ob_movecost-config.movetimemin)/(config.predict_time-config.movetimemin)
-            
-                if ob_movecost<=0:
-                    continue
+            # Each statically feasible candidate gets a constant-equation TTC.
+            ttc = cal_time(obstacles, ttc_x, ttc_y, ttc_theta, v, w, config.movetimemin)
+            if ttc<=config.movetimemin:
+                continue
 
-            final_cost = to_human_cost + speed_cost + ob_movecost+ob_cost
+            final_cost = to_human_cost + speed_cost + ob_cost
 
             # if log_writer is not None:
             #     log_writer.writerow([
@@ -486,11 +483,14 @@ def calc_obstacle_cost(traj: np.ndarray, ob: tuple[np.ndarray, np.ndarray], conf
 
     dist2 = (tx - ox_arr)**2 + (ty - oy_arr)**2   # (T, N)
 
-    if np.any(dist2 <= config.robot_radius**2):
+    min_dist2 = dist2.min()
+    # A NaN sensor point must not hide contact with another, valid point.
+    if (min_dist2 <= config.robot_radius**2
+            or (np.isnan(min_dist2) and np.any(dist2 <= config.robot_radius**2))):
         return float("-Inf")
 
     # 截断：超过 maxdect 的距离不参与计算，等价于原来 minr = config.maxdect 的初始值
-    minr = min(np.sqrt(dist2.min()), config.maxdect)
+    minr = min(math.sqrt(min_dist2), config.maxdect)
 
     return (minr - config.robot_radius) / (config.maxdect - config.robot_radius)
 

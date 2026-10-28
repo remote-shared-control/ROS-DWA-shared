@@ -96,6 +96,42 @@ python3 -m unittest discover -s shared_core/sim/tests -p 'test_rosbag_recording.
 
 The Excel tests require `openpyxl`; the other tests do not require ROS.
 
+## DWA controllers with constant-candidate TTC
+
+`shared_core/sim/dwa_simwaffi_new.py` retains its original forward integration;
+`shared_core/sim/dwa_simwaffi_new_midpoint.py` retains midpoint-vw integration.
+Both keep the original TTC model: predict immediately from the current pose
+using each candidate's constant `(v, w)`. Their TTC uses
+`cal_ctime_midpoint.cal_time_constant`, sharing the hybrid controller's cached
+obstacle geometry, conservative swept bounds and continuous line/arc solver.
+It keeps the obstacle inflation from `CubeReader.robot_radius_cal`; the hybrid
+transition radius does not apply to this constant-candidate calculation.
+
+Every candidate that passes static-obstacle collision detection gets a TTC
+calculation, including candidates with lower scores. Contact at or before
+`config.movetimemin` is rejected. The TTC prediction horizon is
+`config.movetimemin`; no collision returns `config.movetimemin + 1`. TTC is a
+feasibility filter, while the original human, speed and static-obstacle costs
+rank safe candidates. Candidate spacing, static cost radius and preview
+integration are unchanged. Obstacle geometry is prepared once per cycle,
+yaw costs once per angular candidate and speed costs once per linear candidate.
+
+The continuous solver also checks the first time interval, negative yaw rates,
+tangent contacts and contact exactly at the horizon, which the legacy sampled
+root search could miss. Run the ROS-free production-cycle benchmark with:
+
+```bash
+python3 shared_core/sim/benchmark_midpoint_ttc.py --repeats 9 --baseline-ref 08fd177 --profile
+python3 shared_core/sim/benchmark_midpoint_ttc.py --controller dwa_simwaffi_new.py --repeats 9 --profile
+```
+
+The benchmark verifies that every statically feasible candidate calls TTC and
+reports any command/preview differences from the old solver. Measured planning
+Hz excludes ROS callbacks, publishing and Gazebo; the node targets 20 Hz.
+Use `--baseline-dir` with a directory containing saved controller and TTC source
+files to compare against an uncommitted working-tree baseline instead of a Git
+revision.
+
 ## Midpoint transition followed by equation-based TTC
 
 `shared_core/sim/dwa_simwaffi_new_midpoint_hybrid.py` is a separate controller
@@ -134,7 +170,7 @@ The dynamic prediction horizon is `config.movetimemin`. If it ends during
 acceleration, check only the transition through that horizon. With no collision
 or no obstacles, the solver returns `config.movetimemin + 1`. Static-obstacle
 evaluation and RViz retain the existing midpoint trajectory and static prediction
-horizon. The two original programs are unchanged.
+horizon.
 
 The hybrid controller checks TTC for every candidate that passes static-obstacle
 collision detection, including lower-scoring candidates. It rejects

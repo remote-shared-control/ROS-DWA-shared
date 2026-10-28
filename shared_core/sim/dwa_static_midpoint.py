@@ -305,22 +305,22 @@ def calc_dynamic_window(x, config):
     # -----------------------------
     v_min = max(
         config.min_speed,
-        x[3] - config.max_accel * config.dt
+        x[3] - config.max_accel * config.predict_time
     )
 
     v_max = min(
         config.max_speed,
-        x[3] + config.max_accel * config.dt
+        x[3] + config.max_accel * config.predict_time
     )
 
     w_min = max(
         -config.max_yawrate,
-        x[4] - config.max_dyawrate * config.dt
+        x[4] - config.max_dyawrate * config.predict_time
     )
 
     w_max = min(
         config.max_yawrate,
-        x[4] + config.max_dyawrate * config.dt
+        x[4] + config.max_dyawrate * config.predict_time
     )
 
     # -----------------------------

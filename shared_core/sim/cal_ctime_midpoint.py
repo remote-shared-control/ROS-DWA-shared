@@ -361,3 +361,18 @@ def cal_time(cube, transition, v, w, T):
         if hit is not None:
             result = min(result, t_constant + hit)
     return result
+
+
+def cal_time_constant(cube, x, y, theta, v, w, T):
+    """Return exact constant-candidate TTC from the current pose, or T + 1.
+
+    This is the constant-speed model used by dwa_simwaffi_new_midpoint.py.
+    A zero-length transition reuses the continuous line/arc solver and cached
+    obstacle geometry without applying robot_radius_transition padding.
+    """
+    motion = {
+        "times": (0.0,),
+        "states": ((x, y, theta, v, w),),
+        "t_constant": 0.0,
+    }
+    return cal_time(cube, motion, v, w, T)
