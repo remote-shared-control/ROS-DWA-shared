@@ -129,7 +129,7 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 2.0 #lower = faster
+        self.speed_cost_gain = 1.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
         self.move_obs_gain = 1.0
         # if args.param == 3:
@@ -137,7 +137,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.21  # [m]
+        self.robot_radius = 0.225  # [m]
 
         self.cube_half_size=0.16
 
