@@ -18,7 +18,7 @@ from geometry_msgs.msg import Twist, Point
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from tf.transformations import euler_from_quaternion
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Int32
 from visualization_msgs.msg import Marker
 from cal_ctime import *
 import numpy as np
@@ -70,6 +70,23 @@ class RuntimeState:
         self.save_requested = False
         self.rosbag_id = 0
         self.result_pending = True  # Handle the result only once.
+        self.enable_experiment_finish = True
+        self.experiment_finished = False
+        self._experiment_finish_lock = threading.Lock()
+
+    def experiment_finish_callback(self, msg):
+        with self._experiment_finish_lock:
+            if (self.enable_experiment_finish and msg.data == 1
+                    and not self.experiment_finished):
+                self.experiment_finished = True
+                print('experiment finished')
+
+    def publish_velocity(self, publisher, velocity):
+        # A finish received during DWA must also override its pending command.
+        with self._experiment_finish_lock:
+            if self.enable_experiment_finish and self.experiment_finished:
+                velocity = Twist()
+            publisher.publish(velocity)
 
 
 runtime_state = RuntimeState()
@@ -753,6 +770,7 @@ def listen_key():
 
 
 def main():
+    runtime_state.enable_experiment_finish = rospy.get_param("~enable_experiment_finish", True)
     runtime_state.rosbag_id = None
     print(__file__ + " start!!")
     print("human is 0,share is 1,have been 1 yet")
@@ -787,6 +805,10 @@ def main():
     counter = StringMessageCounter()
 
     
+    sub_finish = rospy.Subscriber(
+        "/dynamic_obstacle_finished", Int32, runtime_state.experiment_finish_callback,
+        queue_size=1,
+    )
     subOdom = rospy.Subscriber("/odom", Odometry, config.assignOdomCoords)
     # subLaser = rospy.Subscriber("/filtered_scan", LaserScan, obs.assignObs, config)
     # subLaser = rospy.Subscriber("/scan", LaserScan, obs.assignObs, config)
@@ -814,6 +836,11 @@ def main():
     start_time = rospy.get_time()
     # runs until terminated externally
     while not rospy.is_shutdown():
+        if runtime_state.enable_experiment_finish and runtime_state.experiment_finished:
+            runtime_state.publish_velocity(pub, Twist())
+            config.r.sleep()
+            continue
+
         current_time = rospy.get_time() - start_time
 
         if runtime_state.control_mode == 1:
@@ -840,7 +867,7 @@ def main():
             speed.angular.z = config.human.angular.z
         # if runtime_state.result_pending:
         #     marker_pub.publish(markers)
-        pub.publish(speed)
+        runtime_state.publish_velocity(pub, speed)
 
         if atGoal(config) == 1 or runtime_state.save_requested:
             if runtime_state.result_pending:
