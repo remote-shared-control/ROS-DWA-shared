@@ -1,0 +1,13 @@
+<launch>
+  <arg name="controller" default="dwa_simwaffi_new_midpoint_hybrid.py" />
+  <arg name="experiment_namespace" default="/sim_exp" />
+  <arg name="service_timeout" default="30.0" />
+  <arg name="start_margin" default="0.2" />
+  <param name="/use_sim_time" value="true" />
+  <node pkg="shared_core" type="run_experiment.py" name="shared_dwa"
+        args="--controller $(arg controller)" output="screen" required="true">
+    <param name="experiment_namespace" value="$(arg experiment_namespace)" />
+    <param name="experiment_service_timeout" value="$(arg service_timeout)" />
+    <param name="experiment_start_margin" value="$(arg start_margin)" />
+  </node>
+</launch>
