@@ -215,7 +215,10 @@ class ControllerIntegrationTests(unittest.TestCase):
                 self.assertFalse(starts[0].args or starts[0].keywords)
                 self.assertTrue(any(isinstance(call.func, ast.Attribute)
                                     and isinstance(call.func.value, ast.Name)
-                                    and call.func.value.id == "pub" and call.func.attr == "publish"
+                                    and call.func.value.id == "runtime_state"
+                                    and call.func.attr == "publish_velocity"
+                                    and call.args and isinstance(call.args[0], ast.Name)
+                                    and call.args[0].id == "pub"
                                     for call in calls))
                 saves = [call for call in calls if isinstance(call.func, ast.Name)
                          and call.func.id == "save_result"]

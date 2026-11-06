@@ -1,0 +1,14 @@
+<launch>
+  <arg name="seed" default="42" />
+  <arg name="duration" default="70.0" />
+  <arg name="start_delay" default="2.0" />
+  <arg name="experiment_namespace" default="/sim_exp" />
+  <param name="/use_sim_time" value="true" />
+  <node pkg="shared_core" type="dynamic_obstacles.py" name="sim_exp_dynamic_obstacles"
+        output="screen" required="true">
+    <param name="seed" value="$(arg seed)" />
+    <param name="duration" value="$(arg duration)" />
+    <param name="start_delay" value="$(arg start_delay)" />
+    <param name="experiment_namespace" value="$(arg experiment_namespace)" />
+  </node>
+</launch>
