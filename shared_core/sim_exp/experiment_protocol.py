@@ -8,6 +8,12 @@ TERMINAL = {"FINISHED", "CANCELLED", "ABORTED"}
 NSEC = 1_000_000_000
 
 
+def validate_seed(seed):
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**31 - 1:
+        raise ValueError("seed must be an integer between 0 and 2147483647")
+    return seed
+
+
 class Session:
     """Owned by the obstacle node; its adapter serializes access with a lock."""
 
@@ -27,8 +33,11 @@ class Session:
         self.previous_ns = None
         self.last_heartbeat = 0.0
         self.first_obstacle_update_ns = None
+        self.seed = None
+        self.launch_id = ""
+        self.controller = ""
 
-    def prepare(self, now_ns, wall_now):
+    def prepare(self, now_ns, wall_now, seed=None, launch_id="", controller=""):
         if self.phase in ACTIVE:
             raise ValueError("Another experiment is already active")
         if now_ns <= 0:
@@ -40,6 +49,7 @@ class Session:
         self.previous_ns = now_ns
         self.last_heartbeat = wall_now
         self.first_obstacle_update_ns = None
+        self.seed, self.launch_id, self.controller = seed, launch_id, controller
         return self.snapshot()
 
     def _check_run(self, run_id):
@@ -93,6 +103,9 @@ class Session:
             "t0_ns": self.t0_ns, "duration_ns": self.duration_ns,
             "elapsed_ns": self.elapsed_ns, "reason": self.reason,
             "first_obstacle_update_ns": self.first_obstacle_update_ns,
+            "seed": self.seed, "launch_id": self.launch_id,
+            "controller": self.controller, "sim_time_ns": self.previous_ns or 0,
+            "capabilities": ["prepare_seed"],
         }
 
 

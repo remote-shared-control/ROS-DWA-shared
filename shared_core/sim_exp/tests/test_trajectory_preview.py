@@ -262,18 +262,11 @@ class TrajectoryPreviewTests(unittest.TestCase):
                 run_selection(namespace, config, [0.3], [0.2])
                 robot = namespace["robot_trajectory"]
                 marker = namespace["marker"]
-                if path.name == "direct.py":
-                    namespace["line"](robot.point_count)
-                    namespace["h_line"](namespace["human_trajectory"].point_count)
-                else:
-                    namespace["line"](robot.point_count, marker, robot.x_points, robot.y_points)
+                namespace["line"](robot.point_count, marker, robot.x_points, robot.y_points)
                 self.assertEqual(len(marker.points), robot.point_count)
                 self.assertEqual(marker.points[0].x, robot.x_points[0])
                 robot.set_trajectory(None)
-                if path.name == "direct.py":
-                    namespace["line"](robot.point_count)
-                else:
-                    namespace["line"](robot.point_count, marker, robot.x_points, robot.y_points)
+                namespace["line"](robot.point_count, marker, robot.x_points, robot.y_points)
                 self.assertEqual(marker.points, [])
 
 

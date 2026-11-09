@@ -4,6 +4,59 @@
 `direct.py` 均通过共同 ROS 仿真起点放行，DWA/TTC 计算、候选速度和已有记录开关
 保持原值。`sim` 和包外的构建配置未修改。
 
+## Robot 端 Qt GUI
+
+Ubuntu 20.04 / ROS Noetic 推荐使用系统 Python 和 PyQt5。robot 端安装一次界面依赖：
+
+```bash
+sudo apt install python3-pyqt5
+```
+
+两端需要 ROS 标准包 `dynamic_reconfigure`（它只提供已有的消息/服务类型，不需要
+单独运行服务节点，也不需要生成自定义消息）。若当前 ROS 安装不含此包，安装一次：
+
+```bash
+sudo apt install ros-noetic-dynamic-reconfigure
+```
+
+先启动原来的 Gazebo、机器人、传感器及人工速度输入节点。在 master 端更新本目录的
+`dynamic_obstacles.py` 和 `experiment_protocol.py`，将它们放在同一个目录，然后只运行：
+
+```bash
+python3 dynamic_obstacles.py
+```
+
+master 端不需要 GUI，也不需要每次修改 seed 参数或重启障碍物程序。
+
+在 robot 端已经 source ROS 和工作区的终端，从仓库根目录打开 GUI：
+
+```bash
+python3 shared_core/sim_exp/experiment_gui.py
+```
+
+也可以使用：
+
+```bash
+roslaunch shared_core sim_exp_gui.launch
+```
+
+1. 等待界面显示 `master 已连接`。
+2. 输入 seed（0～2147483647，默认 42），选择一个 DWA 程序。
+3. 点击“启动实验”。seed 随本次服务请求原子地传给 master，master 重新生成/复位
+   对应场景；DWA 与障碍物按共同 t0 放行。
+4. GUI 显示 master 实际接受的 seed、阶段、70 秒仿真进度和 DWA 输出日志。
+5. 70 秒结束后 GUI 自动关闭本次 DWA 子进程，master 保持待命；可选择新 seed/算法
+   再次启动。命令行直接启动的 DWA 仍保留原来的“结束后持续发布零速度”行为。
+
+“停止实验”和关闭 GUI 都会停止 GUI 自己启动的 DWA，并取消它对应的远端实验。
+子进程有独立进程组，超时清理也覆盖其 rosbag 等子进程。GUI 不会取消其他编号的实验；
+master 正在运行另一场实验时，启动按钮不可用。GUI 与 master 的状态连接超时，也会
+停止本次子进程。不要同时运行另一个手动 DWA / cmd_vel 控制器。
+
+界面会记住上次的 seed 和程序选择。`--namespace /sim_exp` 可选择实验命名空间；
+`--preview` 可在不连接 ROS、不启动 DWA 的情况下预览界面。较新 Python 环境也可使用
+PySide6 核心窗口组件作为兼容绑定；Ubuntu Noetic 上优先使用上面的 PyQt5 安装方式。
+
 ## 两台机器怎样启动
 
 先保留原来的 Gazebo、机器人和传感器启动流程。两端连接同一个 ROS Master，
@@ -53,8 +106,11 @@ python3 shared_core/sim_exp/dwa_simwaffi_new_midpoint_hybrid.py
 5. 两边到 t0 才允许运动。DWA 的实验时间和障碍物轨迹时间均为 `now - t0`。
 6. 到达 70 秒，双方停止；DWA 退出、心跳丢失、服务错误或时钟回退也会中止实验。
 
-服务采用 ROS 自带的 `std_srvs/Trigger`，响应的 `message` 是 JSON，包含 run_id、
-t0（整数纳秒）、时长和阶段，无需生成自定义服务或修改相邻的 CMake/package.xml。
+无 seed 的命令行启动采用 ROS 自带的 `std_srvs/Trigger`。GUI 启动使用标准
+`dynamic_reconfigure/Reconfigure` 调用 `/sim_exp/prepare_seed`，在同一次请求中传送
+seed、GUI 启动编号和程序名，并完成场景准备；运行中拒绝改 seed。两种响应都携带
+JSON 实验状态（包括 run_id、seed、启动编号、t0、时长和阶段），无需生成自定义服务
+或修改相邻的 CMake/package.xml。旧命令行启动沿用 master 当前选中的 seed。
 每个 run_id 有独立的 `/sim_exp/runs/<run_id>/arm` 和 `cancel` 服务，旧客户端不能
 取消下一次实验。`/sim_exp/state` 发布带编号的锁存状态，DWA 忽略上次的完成状态。
 `/dynamic_obstacle_states`、`/dynamic_obstacle_finished` 仍保留，实验副本使用前者
@@ -88,6 +144,13 @@ master 默认在 3 秒无心跳后冻结障碍物。DWA 同样在 3 秒无状态
 
 ```bash
 python3 -m unittest discover -s shared_core/sim_exp/tests -p 'test_experiment*.py' -v
+```
+
+安装 PyQt5 后，上面的命令也会运行真实 Qt 控件和 QProcess 子进程的离屏测试；
+缺少 Qt 时只跳过界面测试。可单独运行界面测试：
+
+```bash
+QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s shared_core/sim_exp/tests -p 'test_experiment_gui_qt.py' -v
 ```
 
 完整的副本算法回归测试还需要 NumPy，Excel 测试需要 openpyxl：

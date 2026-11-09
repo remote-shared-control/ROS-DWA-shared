@@ -13,7 +13,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--controller", choices=choices,
                         default="dwa_simwaffi_new_midpoint_hybrid.py")
+    parser.add_argument("--new-session", action="store_true",
+                        help="Keep this controller and its children in their own process group")
     args, ros_args = parser.parse_known_args()
+    if args.new_session and os.name == "posix":
+        os.setsid()
     os.execv(sys.executable, [sys.executable, str(directory / args.controller), *ros_args])
 
 

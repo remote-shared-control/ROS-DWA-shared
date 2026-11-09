@@ -10,13 +10,14 @@ import json
 import random
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
 from test_experiment_finish import CONTROLLERS, Twist, components, load_controller
 from test_experiment_sync import Message, definitions
-from experiment_protocol import ACTIVE, NSEC, Session, StartGate
+from experiment_protocol import ACTIVE, NSEC, Session, StartGate, validate_seed
 
 
 def until(predicate, timeout=3.0):
@@ -37,13 +38,15 @@ class RosBus:
         self.messages = {}
         self.commands = []
         self.threads = []
+        self.params = {}
+        self.ServiceException = RuntimeError
         self.Time = SimpleNamespace(now=lambda: SimpleNamespace(
             to_nsec=lambda: self.now_ns))
         self.loginfo = self.logwarn = self.logerr = self.logwarn_throttle = Mock()
         self.on_shutdown = Mock()
 
     def get_param(self, name, default=None):
-        return True if name == "/use_sim_time" else default
+        return True if name == "/use_sim_time" else self.params.get(name, default)
 
     def get_time(self):
         return self.now_ns / NSEC
@@ -86,10 +89,10 @@ class RosBus:
         until(lambda: name in self.services, timeout)
 
     def ServiceProxy(self, name, _kind):
-        def call():
+        def call(*args):
             with self.lock:
                 handler = self.services[name]
-            return handler(Message())
+            return handler(Message(config=args[0]) if args else Message())
         return call
 
     def set_model_state(self, state):
@@ -111,7 +114,9 @@ class RepeatedExperimentTests(unittest.TestCase):
             "ModelStates": lambda: SimpleNamespace(name=[], pose=[], twist=[]),
             "String": Message, "Int32": Message, "Trigger": object(),
             "TriggerResponse": Message, "bisect": bisect, "random": random,
-            "heapq": heapq,
+            "heapq": heapq, "validate_seed": validate_seed, "Reconfigure": object(),
+            "ReconfigureResponse": Message, "IntParameter": Message, "StrParameter": Message,
+            "DynamicConfig": lambda: Message(ints=[], strs=[]),
         }
         definitions("dynamic_obstacles.py", {
             "plan_scene", "choose_respawn_y", "state_at", "make_pose",
@@ -135,7 +140,9 @@ class RepeatedExperimentTests(unittest.TestCase):
             "rospy": self.ros, "json": json, "threading": threading, "time": time,
             "NSEC": NSEC, "StartGate": StartGate, "Twist": Twist,
             "String": Message, "Int32": Message, "Odometry": object(),
-            "Trigger": object(),
+            "Trigger": object(), "Reconfigure": object(), "validate_seed": validate_seed,
+            "IntParameter": Message, "StrParameter": Message,
+            "DynamicConfig": lambda: Message(ints=[], strs=[]),
         })
         self.Client = client_ns["ExperimentClient"]
 
@@ -230,6 +237,22 @@ class RepeatedExperimentTests(unittest.TestCase):
         self.assertEqual(self.ros.commands[-1][1], (0.0,) * 6)
         replacement, *_ = self.start(CONTROLLERS[0])
         self.assertNotEqual(client.gate.run_id, replacement.gate.run_id)
+
+    def test_robot_seed_reaches_master_and_same_seed_repeats_without_server_restart(self):
+        initial_scenes = []
+        for seed in (42, 42, 17):
+            token = uuid.uuid4().hex
+            self.ros.params.update({"~experiment_seed": seed,
+                                    "~experiment_launch_id": token,
+                                    "~experiment_controller": CONTROLLERS[0].name})
+            client, _, _, _, initial = self.start(CONTROLLERS[0])
+            state = self.server.session.snapshot()
+            self.assertEqual((state["seed"], state["launch_id"]), (seed, token))
+            self.assertEqual(self.server.cfg["seed"], seed)
+            initial_scenes.append(initial)
+            client.close()
+        self.assertEqual(initial_scenes[0], initial_scenes[1])
+        self.assertNotEqual(initial_scenes[0], initial_scenes[2])
 
 
 if __name__ == "__main__":

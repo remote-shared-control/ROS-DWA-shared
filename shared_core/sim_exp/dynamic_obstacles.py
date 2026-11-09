@@ -19,8 +19,10 @@ from gazebo_msgs.srv import GetModelState, SetModelState, SpawnModel
 from geometry_msgs.msg import Pose, Twist
 from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger, TriggerResponse
+from dynamic_reconfigure.msg import Config as DynamicConfig, IntParameter, StrParameter
+from dynamic_reconfigure.srv import Reconfigure, ReconfigureResponse
 
-from experiment_protocol import ACTIVE, NSEC, Session
+from experiment_protocol import ACTIVE, NSEC, Session, validate_seed
 
 CONFIG = {
     'num_obstacles': 40,
@@ -208,6 +210,7 @@ class ObstacleExperiments:
             heartbeat_timeout=float(rospy.get_param('~heartbeat_timeout', 3.0)),
             prepare_timeout=float(rospy.get_param('~prepare_timeout', 30.0)),
         )
+        self.session.seed = cfg['seed']
         self.lock = threading.RLock()
         self.run_services = []
         self.last_frame_ns = None
@@ -222,6 +225,8 @@ class ObstacleExperiments:
         # Advertising prepare means the models and initial frame are ready.
         self.prepare_service = rospy.Service(self.namespace + '/prepare', Trigger,
                                               self._prepare)
+        self.seed_service = rospy.Service(self.namespace + '/prepare_seed', Reconfigure,
+                                         self._prepare_seed)
         rospy.loginfo('Scene ready; waiting for a DWA experiment request')
 
     def _frame(self, elapsed, moving=False, update_gazebo=True):
@@ -241,13 +246,47 @@ class ObstacleExperiments:
             self.session.heartbeat(message.data, time.monotonic())
 
     def _prepare(self, _request):
+        return self._prepare_configured()
+
+    def _prepare_seed(self, request):
+        """Atomically select the seed and prepare this run using a standard srv."""
+        try:
+            seeds = [param.value for param in request.config.ints if param.name == 'seed']
+            if len(seeds) != 1:
+                raise ValueError('Exactly one seed is required')
+            seed = validate_seed(seeds[0])
+            metadata = {param.name: param.value for param in request.config.strs}
+            launch_id = metadata.get('launch_id', '')
+            if launch_id and (len(launch_id) != 32 or
+                              any(c not in '0123456789abcdef' for c in launch_id)):
+                raise ValueError('Invalid launch ID')
+            response = self._prepare_configured(seed, launch_id,
+                                                  metadata.get('controller', ''))
+            if not response.success:
+                raise ValueError(response.message)
+            config = DynamicConfig()
+            config.ints = [IntParameter(name='seed', value=seed)]
+            config.strs = [StrParameter(name='experiment', value=response.message)]
+            return ReconfigureResponse(config=config)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise rospy.ServiceException(str(exc))
+
+    def _prepare_configured(self, seed=None, launch_id="", controller=""):
         with self.lock:
             if self.session.phase in ACTIVE:
                 return TriggerResponse(success=False, message='Another experiment is active')
             try:
+                # Preparation and seed selection share the same lock; another
+                # GUI cannot overwrite the seed between configuration and arm.
+                if seed is not None and seed != self.cfg['seed']:
+                    candidate = dict(self.cfg, seed=seed)
+                    tracks, starts = plan_scene(candidate)
+                    self.cfg, self.tracks, self.starts = candidate, tracks, starts
                 # This can take time: choose t0 later, in the arm service.
                 self._frame(0.0, moving=False)
-                self.session.prepare(rospy.Time.now().to_nsec(), time.monotonic())
+                self.session.prepare(rospy.Time.now().to_nsec(), time.monotonic(),
+                                     seed=self.cfg['seed'], launch_id=launch_id,
+                                     controller=controller)
                 for service in self.run_services:
                     service.shutdown('Replaced by a new experiment')
                 prefix = self.namespace + '/runs/' + self.session.run_id
@@ -330,6 +369,7 @@ def main():
     cfg = dict(CONFIG)
     for key in CONFIG:
         cfg[key] = rospy.get_param('~' + key, CONFIG[key])
+    cfg['seed'] = validate_seed(cfg['seed'])
 
     if cfg['num_obstacles'] <= 0 or cfg['duration'] <= 0:
         raise ValueError('num_obstacles and duration must be positive')

@@ -1,0 +1,6 @@
+<launch>
+  <arg name="experiment_namespace" default="/sim_exp" />
+  <param name="/use_sim_time" value="true" />
+  <node pkg="shared_core" type="experiment_gui.py" name="sim_exp_gui"
+        args="--namespace $(arg experiment_namespace)" output="screen" />
+</launch>

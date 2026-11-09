@@ -9,8 +9,10 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger
+from dynamic_reconfigure.msg import Config as DynamicConfig, IntParameter, StrParameter
+from dynamic_reconfigure.srv import Reconfigure
 
-from experiment_protocol import NSEC, StartGate
+from experiment_protocol import NSEC, StartGate, validate_seed
 
 
 class ExperimentClient:
@@ -29,6 +31,11 @@ class ExperimentClient:
         self.first_command_logged = False
         self.cancel_requested = False
         self.state = None
+        self.seed = rospy.get_param("~experiment_seed", None)
+        if self.seed is not None:
+            self.seed = validate_seed(self.seed)
+        self.launch_id = rospy.get_param("~experiment_launch_id", "")
+        self.controller = rospy.get_param("~experiment_controller", "")
         runtime.experiment = self
         self.heartbeat = rospy.Publisher(self.namespace + "/heartbeat", String, queue_size=1)
         self.state_sub = rospy.Subscriber(self.namespace + "/state", String,
@@ -53,7 +60,7 @@ class ExperimentClient:
         except (ValueError, TypeError, KeyError):
             rospy.logwarn_throttle(5.0, "Invalid sim_exp state message")
 
-    def _rpc(self, name, timeout=None):
+    def _rpc(self, name, timeout=None, seed=None):
         """Bound the whole RPC by wall time, including the service response."""
         timeout = self.timeout if timeout is None else timeout
         result, done = {}, threading.Event()
@@ -61,10 +68,20 @@ class ExperimentClient:
         def call():
             try:
                 rospy.wait_for_service(name, timeout=timeout)
-                response = rospy.ServiceProxy(name, Trigger)()
-                if not response.success:
-                    raise RuntimeError(response.message)
-                result["value"] = json.loads(response.message)
+                if seed is None:
+                    response = rospy.ServiceProxy(name, Trigger)()
+                    if not response.success:
+                        raise RuntimeError(response.message)
+                    payload = response.message
+                else:
+                    config = DynamicConfig()
+                    config.ints = [IntParameter(name="seed", value=seed)]
+                    config.strs = [StrParameter(name="launch_id", value=self.launch_id),
+                                   StrParameter(name="controller", value=self.controller)]
+                    response = rospy.ServiceProxy(name, Reconfigure)(config)
+                    payload = next(param.value for param in response.config.strs
+                                   if param.name == "experiment")
+                result["value"] = json.loads(payload)
             except Exception as exc:
                 result["error"] = exc
             finally:
@@ -130,9 +147,16 @@ class ExperimentClient:
         try:
             if not rospy.get_param("/use_sim_time", False):
                 raise RuntimeError("Set /use_sim_time=true before starting the nodes")
-            prepared = self._rpc(self.namespace + "/prepare")
+            seed = getattr(self, "seed", None)
+            if seed is None:
+                prepared = self._rpc(self.namespace + "/prepare")
+            else:
+                prepared = self._rpc(self.namespace + "/prepare_seed", seed=seed)
             with self.lock:
                 self.gate.adopt(prepared)
+                if seed is not None and (prepared.get("seed") != seed or
+                                          prepared.get("launch_id") != self.launch_id):
+                    raise RuntimeError("Remote experiment seed/launch ID does not match")
                 # A state callback might have preceded the prepare response.
                 if self.state is not None:
                     self.gate.observe(self.state, time.monotonic())

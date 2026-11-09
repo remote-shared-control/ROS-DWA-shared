@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DIRECTORY))
-from experiment_protocol import ACTIVE, NSEC, Session, StartGate
+from experiment_protocol import ACTIVE, NSEC, Session, StartGate, validate_seed
 
 
 class ProtocolTests(unittest.TestCase):
@@ -142,6 +142,7 @@ class ObstacleAdapterTests(unittest.TestCase):
             Publisher=Mock(side_effect=lambda *a, **k: Mock()),
             Subscriber=Mock(), Service=Mock(side_effect=lambda *a, **k: Mock()),
             loginfo=Mock(), logerr=Mock(), is_shutdown=Mock(),
+            ServiceException=RuntimeError,
         )
         self.frame = Mock()
         self.ns = definitions("dynamic_obstacles.py", {"ObstacleExperiments"}, {
@@ -149,11 +150,39 @@ class ObstacleAdapterTests(unittest.TestCase):
             "threading": threading, "time": SimpleNamespace(
                 monotonic=lambda: self.wall, sleep=Mock()),
             "json": json, "String": Message, "Int32": Message,
-            "Trigger": object(), "TriggerResponse": Message,
+            "Trigger": object(), "TriggerResponse": Message, "Reconfigure": object(),
+            "validate_seed": validate_seed,
+            "IntParameter": Message, "StrParameter": Message,
+            "ReconfigureResponse": Message,
+            "DynamicConfig": lambda: Message(ints=[], strs=[]),
             "publish_frame": self.frame,
         })
         self.server = self.ns["ObstacleExperiments"](
-            {"duration": 70.0, "rate": 20}, [], [], Mock(), Mock(), Mock())
+            {"duration": 70.0, "rate": 20, "seed": 42}, [], [], Mock(), Mock(), Mock())
+
+    def test_seed_request_plans_and_prepares_one_atomic_experiment(self):
+        planner = self.ns["plan_scene"] = Mock(return_value=(["new tracks"], ["new starts"]))
+        request = Message(config=Message(
+            ints=[Message(name="seed", value=17)],
+            strs=[Message(name="launch_id", value="a" * 32)]))
+        response = self.server._prepare_seed(request)
+        state = json.loads(response.config.strs[0].value)
+        self.assertEqual((state["seed"], state["launch_id"], state["phase"]),
+                         (17, "a" * 32, "PREPARED"))
+        self.assertEqual(self.server.tracks, ["new tracks"])
+        planner.assert_called_once()
+
+    def test_seed_change_during_an_active_run_is_rejected_without_resetting_models(self):
+        self.server._prepare(None)
+        self.server._arm(self.server.session.run_id)
+        self.frame.reset_mock()
+        planner = self.ns["plan_scene"] = Mock()
+        request = Message(config=Message(ints=[Message(name="seed", value=99)], strs=[]))
+        with self.assertRaises(RuntimeError):
+            self.server._prepare_seed(request)
+        self.assertEqual(self.server.cfg["seed"], 42)
+        self.frame.assert_not_called()
+        planner.assert_not_called()
 
     def test_prepare_resets_before_t0_is_chosen_and_response_contains_run_id(self):
         self.frame.reset_mock()

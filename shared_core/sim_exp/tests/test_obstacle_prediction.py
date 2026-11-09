@@ -204,16 +204,19 @@ class ObstaclePredictionTests(unittest.TestCase):
         }, namespace)
         config = namespace["Config"]()
         self.reader.config = config
-        obs_info = np.array([[4.2, 0.0, -1.0, 0.0, config.obs_radius, 0.0]])
+        # Put the first contact at the configured endpoint, independent of
+        # changes to the controller's prediction horizon.
+        obs_info = np.array([[config.predict_time + 0.2, 0.0, -1.0, 0.0,
+                              config.obs_radius, 0.0]])
         future = self.reader.predict_future(obs_info)
         trajectory = namespace["calc_trajectory_midpoint_vw"](
             np.zeros(5), 0.0, 0.0, config
         )
-        self.assertEqual(trajectory.shape[0], 11)
-        self.assertEqual(future.shape, (1, 11, 2))
+        self.assertEqual(trajectory.shape[0], len(config.trajectory_times))
+        self.assertEqual(future.shape, (1, len(config.trajectory_times), 2))
         self.assertEqual(namespace["calc_obstacle_ttc"](
             trajectory, future, config
-        ), 4.0)
+        ), config.predict_time)
 
 
 if __name__ == "__main__":

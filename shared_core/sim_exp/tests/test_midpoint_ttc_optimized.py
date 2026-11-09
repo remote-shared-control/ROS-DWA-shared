@@ -176,21 +176,22 @@ class MidpointConstantSelectionTests(unittest.TestCase):
         self.assertEqual(result, [0.4, 0.6])
         self.assertEqual(len(self.ttc_calls), 6)
 
-    def test_original_normalized_ttc_score_is_kept_when_predict_time_is_longer(self):
+    def test_safe_ttc_does_not_override_cost_ranking_when_preview_is_longer(self):
         self.config.predict_time, self.config.movetimemin = 6.0, 2.0
         self.config.move_obs_gain = 2.0
-        # Dynamic scores are 0.5 and 1.5; the lower human score wins overall.
+        # TTC is a feasibility filter, as documented; safe candidates retain
+        # the human/speed/static ranking even when the preview is longer.
         result = self.select([0.3], [-0.4, 0.2],
                              scores={-0.4: 0.8, 0.2: 0.2},
                              ttc=lambda v, w, horizon: 3.0 if w < 0.0 else 5.0)
-        self.assertEqual(result, [0.3, 0.2])
-        self.assertTrue(all(call[-1] == 6.0 for call in self.ttc_calls))
+        self.assertEqual(result, [0.3, -0.4])
+        self.assertTrue(all(call[-1] == 2.0 for call in self.ttc_calls))
 
-    def test_clear_sentinel_does_not_raise_score_above_horizon_contact(self):
+    def test_clear_sentinel_is_safe_but_contact_at_safety_horizon_is_rejected(self):
         self.config.predict_time, self.config.movetimemin = 6.0, 2.0
         result = self.select([0.3], [-0.4, 0.2],
                              ttc=lambda v, w, horizon: horizon + (1.0 if w < 0 else 0.0))
-        self.assertEqual(result, [0.3, 0.2])
+        self.assertEqual(result, [0.3, -0.4])
 
     def test_short_prediction_does_not_add_a_dynamic_score(self):
         self.config.predict_time, self.config.movetimemin = 1.0, 3.0
