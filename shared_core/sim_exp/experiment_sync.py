@@ -9,10 +9,11 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger
-from dynamic_reconfigure.msg import Config as DynamicConfig, IntParameter, StrParameter
+from dynamic_reconfigure.msg import Config as DynamicConfig, IntParameter, StrParameter, DoubleParameter
 from dynamic_reconfigure.srv import Reconfigure
 
-from experiment_protocol import NSEC, StartGate, validate_seed
+from experiment_protocol import (NSEC, StartGate, validate_seed,
+                                 validate_obstacle_count, validate_duration)
 
 
 class ExperimentClient:
@@ -34,6 +35,12 @@ class ExperimentClient:
         self.seed = rospy.get_param("~experiment_seed", None)
         if self.seed is not None:
             self.seed = validate_seed(self.seed)
+        self.num_obstacles = rospy.get_param("~experiment_num_obstacles", None)
+        if self.num_obstacles is not None:
+            self.num_obstacles = validate_obstacle_count(self.num_obstacles)
+        self.duration = rospy.get_param("~experiment_duration", None)
+        if self.duration is not None:
+            self.duration = validate_duration(self.duration)
         self.launch_id = rospy.get_param("~experiment_launch_id", "")
         self.controller = rospy.get_param("~experiment_controller", "")
         runtime.experiment = self
@@ -60,7 +67,7 @@ class ExperimentClient:
         except (ValueError, TypeError, KeyError):
             rospy.logwarn_throttle(5.0, "Invalid sim_exp state message")
 
-    def _rpc(self, name, timeout=None, seed=None):
+    def _rpc(self, name, timeout=None, seed=None, num_obstacles=None, duration=None):
         """Bound the whole RPC by wall time, including the service response."""
         timeout = self.timeout if timeout is None else timeout
         result, done = {}, threading.Event()
@@ -68,14 +75,20 @@ class ExperimentClient:
         def call():
             try:
                 rospy.wait_for_service(name, timeout=timeout)
-                if seed is None:
+                if seed is None and num_obstacles is None and duration is None:
                     response = rospy.ServiceProxy(name, Trigger)()
                     if not response.success:
                         raise RuntimeError(response.message)
                     payload = response.message
                 else:
                     config = DynamicConfig()
-                    config.ints = [IntParameter(name="seed", value=seed)]
+                    config.ints = []
+                    if seed is not None:
+                        config.ints.append(IntParameter(name="seed", value=seed))
+                    if num_obstacles is not None:
+                        config.ints.append(IntParameter(name="num_obstacles", value=num_obstacles))
+                    if duration is not None:
+                        config.doubles = [DoubleParameter(name="duration", value=duration)]
                     config.strs = [StrParameter(name="launch_id", value=self.launch_id),
                                    StrParameter(name="controller", value=self.controller)]
                     response = rospy.ServiceProxy(name, Reconfigure)(config)
@@ -148,15 +161,23 @@ class ExperimentClient:
             if not rospy.get_param("/use_sim_time", False):
                 raise RuntimeError("Set /use_sim_time=true before starting the nodes")
             seed = getattr(self, "seed", None)
-            if seed is None:
+            count = getattr(self, "num_obstacles", None)
+            duration = getattr(self, "duration", None)
+            configured = any(value is not None for value in (seed, count, duration))
+            if not configured:
                 prepared = self._rpc(self.namespace + "/prepare")
             else:
-                prepared = self._rpc(self.namespace + "/prepare_seed", seed=seed)
+                prepared = self._rpc(self.namespace + "/prepare_seed", seed=seed,
+                                     num_obstacles=count, duration=duration)
             with self.lock:
                 self.gate.adopt(prepared)
                 if seed is not None and (prepared.get("seed") != seed or
                                           prepared.get("launch_id") != self.launch_id):
                     raise RuntimeError("Remote experiment seed/launch ID does not match")
+                if count is not None and prepared.get("num_obstacles") != count:
+                    raise RuntimeError("Remote obstacle count does not match")
+                if duration is not None and prepared.get("duration_ns") != round(duration * NSEC):
+                    raise RuntimeError("Remote experiment duration does not match")
                 # A state callback might have preceded the prepare response.
                 if self.state is not None:
                     self.gate.observe(self.state, time.monotonic())

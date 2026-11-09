@@ -1,17 +1,33 @@
 """ROS-independent experiment state and start gate (times are integer ns)."""
 
+import math
 import uuid
 
 
-ACTIVE = {"PREPARED", "ARMED", "RUNNING"}
+ACTIVE = {"PREPARING", "PREPARED", "ARMED", "RUNNING"}
 TERMINAL = {"FINISHED", "CANCELLED", "ABORTED"}
 NSEC = 1_000_000_000
+MAX_OBSTACLES = 1000
+MAX_DURATION = 86400.0
 
 
 def validate_seed(seed):
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**31 - 1:
         raise ValueError("seed must be an integer between 0 and 2147483647")
     return seed
+
+
+def validate_obstacle_count(count):
+    if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= MAX_OBSTACLES:
+        raise ValueError("num_obstacles must be an integer between 0 and {}".format(MAX_OBSTACLES))
+    return count
+
+
+def validate_duration(duration):
+    if (isinstance(duration, bool) or not isinstance(duration, (int, float)) or
+            not math.isfinite(duration) or not 0.1 <= duration <= MAX_DURATION):
+        raise ValueError("duration must be finite and between 0.1 and 86400 seconds")
+    return float(duration)
 
 
 class Session:
@@ -36,21 +52,37 @@ class Session:
         self.seed = None
         self.launch_id = ""
         self.controller = ""
+        self.num_obstacles = None
 
-    def prepare(self, now_ns, wall_now, seed=None, launch_id="", controller=""):
+    def prepare(self, now_ns, wall_now, seed=None, launch_id="", controller="",
+                num_obstacles=None, duration=None, preparing=False):
         if self.phase in ACTIVE:
             raise ValueError("Another experiment is already active")
         if now_ns <= 0:
             raise ValueError("Waiting for a valid Gazebo /clock")
+        if num_obstacles is not None:
+            num_obstacles = validate_obstacle_count(num_obstacles)
+        if duration is not None:
+            self.duration_ns = round(validate_duration(duration) * NSEC)
         self.run_id = uuid.uuid4().hex
-        self.phase = "PREPARED"
+        self.phase = "PREPARING" if preparing else "PREPARED"
         self.t0_ns = self.elapsed_ns = 0
         self.reason = ""
         self.previous_ns = now_ns
         self.last_heartbeat = wall_now
         self.first_obstacle_update_ns = None
         self.seed, self.launch_id, self.controller = seed, launch_id, controller
+        self.num_obstacles = num_obstacles
         return self.snapshot()
+
+    def ready(self, now_ns, wall_now):
+        if self.phase != "PREPARING":
+            raise ValueError("No scene preparation is in progress")
+        if now_ns < self.previous_ns:
+            self.abort("ROS clock moved backwards during scene preparation")
+            raise ValueError(self.reason)
+        self.phase, self.previous_ns = "PREPARED", now_ns
+        self.last_heartbeat = wall_now
 
     def _check_run(self, run_id):
         if not run_id or run_id != self.run_id:
@@ -105,7 +137,8 @@ class Session:
             "first_obstacle_update_ns": self.first_obstacle_update_ns,
             "seed": self.seed, "launch_id": self.launch_id,
             "controller": self.controller, "sim_time_ns": self.previous_ns or 0,
-            "capabilities": ["prepare_seed"],
+            "num_obstacles": self.num_obstacles,
+            "capabilities": ["prepare_seed", "scene_settings"],
         }
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Reproducible 70-second Gazebo Classic / ROS Noetic moving-obstacle scene.
+"""Configurable Gazebo Classic / ROS Noetic moving-obstacle experiments.
 
 Use the same ~seed to produce exactly the same obstacle trajectories as a
 function of elapsed ROS simulation time. Changing ~seed changes the scene.
@@ -9,20 +9,23 @@ function of elapsed ROS simulation time. Changing ~seed changes the scene.
 import bisect
 import heapq
 import random
+import re
 import json
 import threading
 import time
 
 import rospy
 from gazebo_msgs.msg import ModelState, ModelStates
-from gazebo_msgs.srv import GetModelState, SetModelState, SpawnModel
+from gazebo_msgs.srv import (GetModelState, SetModelState, SpawnModel,
+                             GetWorldProperties, DeleteModel)
 from geometry_msgs.msg import Pose, Twist
 from std_msgs.msg import Int32, String
 from std_srvs.srv import Trigger, TriggerResponse
-from dynamic_reconfigure.msg import Config as DynamicConfig, IntParameter, StrParameter
+from dynamic_reconfigure.msg import Config as DynamicConfig, IntParameter, StrParameter, DoubleParameter
 from dynamic_reconfigure.srv import Reconfigure, ReconfigureResponse
 
-from experiment_protocol import ACTIVE, NSEC, Session, validate_seed
+from experiment_protocol import (ACTIVE, NSEC, Session, validate_seed,
+                                 validate_obstacle_count, validate_duration)
 
 CONFIG = {
     'num_obstacles': 40,
@@ -107,6 +110,8 @@ def plan_scene(cfg):
     """
     rng = random.Random(cfg['seed'])
     n = cfg['num_obstacles']
+    if n == 0:
+        return [], []
     nx = 5 if n >= 20 else max(1, round(n ** 0.5))
     ny = (n + nx - 1) // nx
     dx = (cfg['x_max'] - cfg['x_min']) / nx
@@ -197,12 +202,61 @@ def publish_frame(t, tracks, starts, cfg, set_state, states_pub,
     states_pub.publish(states)
 
 
+class SceneModels:
+    """Reconcile actual Gazebo models, including leftovers from previous nodes."""
+
+    def __init__(self, get_world, get_state, spawn, delete, verify_timeout=5.0):
+        self.get_world, self.get_state = get_world, get_state
+        self.spawn, self.delete = spawn, delete
+        self.verify_timeout = verify_timeout
+
+    def _managed_names(self):
+        response = self.get_world()
+        if not response.success:
+            raise RuntimeError('Cannot query Gazebo model list: ' + response.status_message)
+        return {name for name in response.model_names
+                if re.fullmatch(r'obstacle_[0-9]+', name)}
+
+    def sync(self, cfg, tracks, progress=None):
+        if len(tracks) != cfg['num_obstacles']:
+            raise ValueError('Trajectory count does not match num_obstacles')
+        desired = {'obstacle_{}'.format(idx + 1) for idx in range(len(tracks))}
+        existing = self._managed_names()
+        for name in sorted(existing - desired):
+            if progress:
+                progress()
+            result = self.delete(name)
+            if not result.success:
+                raise RuntimeError('Cannot delete surplus model {}: {}'.format(
+                    name, result.status_message))
+            rospy.loginfo('Deleted surplus model %s', name)
+        for idx, track in enumerate(tracks):
+            if progress:
+                progress()
+            _, x, y, _ = track[0]
+            ensure_model('obstacle_{}'.format(idx + 1), x, y, cfg, self.get_state, self.spawn)
+        # A successful deletion response alone is not enough: inspect the world.
+        deadline = time.monotonic() + self.verify_timeout
+        while True:
+            actual = self._managed_names()
+            if actual == desired:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Gazebo obstacle count verification failed; missing={}, extra={}'.format(
+                    sorted(desired - actual)[:10], sorted(actual - desired)[:10]))
+            if progress:
+                progress()
+            time.sleep(0.01)
+
+
 class ObstacleExperiments:
     """Serialize scene updates and service callbacks; Gazebo stays remote."""
 
-    def __init__(self, cfg, tracks, starts, set_state, states_pub, done_pub):
+    def __init__(self, cfg, tracks, starts, set_state, states_pub, done_pub, model_manager):
         self.cfg, self.tracks, self.starts = cfg, tracks, starts
         self.set_state, self.states_pub, self.done_pub = set_state, states_pub, done_pub
+        self.models = model_manager
+        self.scene_ready = False
         self.namespace = rospy.get_param('~experiment_namespace', '/sim_exp').rstrip('/')
         self.session = Session(
             duration=cfg['duration'],
@@ -211,6 +265,7 @@ class ObstacleExperiments:
             prepare_timeout=float(rospy.get_param('~prepare_timeout', 30.0)),
         )
         self.session.seed = cfg['seed']
+        self.session.num_obstacles = cfg['num_obstacles']
         self.lock = threading.RLock()
         self.run_services = []
         self.last_frame_ns = None
@@ -218,7 +273,9 @@ class ObstacleExperiments:
         self.last_status_wall = 0.0
         self.state_pub = rospy.Publisher(self.namespace + '/state', String,
                                          queue_size=1, latch=True)
+        self.models.sync(cfg, tracks)
         self._frame(0.0, moving=False)
+        self.scene_ready = True
         self._status()
         self.heartbeat_sub = rospy.Subscriber(self.namespace + '/heartbeat', String,
                                               self._heartbeat, queue_size=1)
@@ -252,41 +309,66 @@ class ObstacleExperiments:
         """Atomically select the seed and prepare this run using a standard srv."""
         try:
             seeds = [param.value for param in request.config.ints if param.name == 'seed']
-            if len(seeds) != 1:
-                raise ValueError('Exactly one seed is required')
-            seed = validate_seed(seeds[0])
+            counts = [param.value for param in request.config.ints if param.name == 'num_obstacles']
+            durations = [param.value for param in getattr(request.config, 'doubles', [])
+                         if param.name == 'duration']
+            if any(len(values) > 1 for values in (seeds, counts, durations)):
+                raise ValueError('Duplicate scene settings are not allowed')
+            if not (seeds or counts or durations):
+                raise ValueError('At least one scene setting is required')
+            seed = validate_seed(seeds[0]) if seeds else None
+            count = validate_obstacle_count(counts[0]) if counts else None
+            duration = validate_duration(durations[0]) if durations else None
             metadata = {param.name: param.value for param in request.config.strs}
             launch_id = metadata.get('launch_id', '')
             if launch_id and (len(launch_id) != 32 or
                               any(c not in '0123456789abcdef' for c in launch_id)):
                 raise ValueError('Invalid launch ID')
             response = self._prepare_configured(seed, launch_id,
-                                                  metadata.get('controller', ''))
+                                                 metadata.get('controller', ''), count, duration)
             if not response.success:
                 raise ValueError(response.message)
             config = DynamicConfig()
-            config.ints = [IntParameter(name='seed', value=seed)]
+            state = json.loads(response.message)
+            config.ints = [IntParameter(name='seed', value=state['seed']),
+                           IntParameter(name='num_obstacles', value=state['num_obstacles'])]
+            config.doubles = [DoubleParameter(name='duration', value=state['duration_ns'] / NSEC)]
             config.strs = [StrParameter(name='experiment', value=response.message)]
             return ReconfigureResponse(config=config)
         except (ValueError, TypeError, AttributeError) as exc:
             raise rospy.ServiceException(str(exc))
 
-    def _prepare_configured(self, seed=None, launch_id="", controller=""):
+    def _prepare_configured(self, seed=None, launch_id="", controller="",
+                            num_obstacles=None, duration=None):
         with self.lock:
             if self.session.phase in ACTIVE:
                 return TriggerResponse(success=False, message='Another experiment is active')
             try:
                 # Preparation and seed selection share the same lock; another
                 # GUI cannot overwrite the seed between configuration and arm.
-                if seed is not None and seed != self.cfg['seed']:
-                    candidate = dict(self.cfg, seed=seed)
+                candidate = dict(self.cfg)
+                if seed is not None:
+                    candidate['seed'] = seed
+                if num_obstacles is not None:
+                    candidate['num_obstacles'] = num_obstacles
+                if duration is not None:
+                    candidate['duration'] = duration
+                tracks, starts = self.tracks, self.starts
+                if candidate != self.cfg:
                     tracks, starts = plan_scene(candidate)
-                    self.cfg, self.tracks, self.starts = candidate, tracks, starts
-                # This can take time: choose t0 later, in the arm service.
-                self._frame(0.0, moving=False)
                 self.session.prepare(rospy.Time.now().to_nsec(), time.monotonic(),
-                                     seed=self.cfg['seed'], launch_id=launch_id,
-                                     controller=controller)
+                                     seed=candidate['seed'], launch_id=launch_id,
+                                     controller=controller, num_obstacles=candidate['num_obstacles'],
+                                     duration=candidate['duration'], preparing=True)
+                self.scene_ready = False
+                self._status()
+                # Deletion/spawn may take time. Send preparation progress so the
+                # GUI does not mistake a busy Gazebo for a lost connection.
+                self.models.sync(candidate, tracks, progress=self._status)
+                self.cfg, self.tracks, self.starts = candidate, tracks, starts
+                self._frame(0.0, moving=False)
+                self.scene_ready = True
+                self.session.ready(rospy.Time.now().to_nsec(), time.monotonic())
                 for service in self.run_services:
                     service.shutdown('Replaced by a new experiment')
                 prefix = self.namespace + '/runs/' + self.session.run_id
@@ -302,6 +384,8 @@ class ObstacleExperiments:
                 return self._response()
             except Exception as exc:
                 self.session.abort(str(exc))
+                self.scene_ready = False
+                self.states_pub.publish(ModelStates())
                 self._status()
                 return TriggerResponse(success=False, message=str(exc))
 
@@ -323,7 +407,8 @@ class ObstacleExperiments:
                 # the exact final frame rather than the previous loop's pose.
                 self.session.tick(rospy.Time.now().to_nsec(), time.monotonic())
                 self.session.cancel(run_id)
-                self._frame(self.session.elapsed_ns / NSEC, moving=False)
+                if self.scene_ready:
+                    self._frame(self.session.elapsed_ns / NSEC, moving=False)
                 self.done_pub.publish(Int32(data=1))
                 return self._response()
             except Exception as exc:
@@ -347,8 +432,9 @@ class ObstacleExperiments:
                             rospy.loginfo('run=%s first obstacle frame at %.9f (t0=%.9f)',
                                           self.session.run_id, now / NSEC,
                                           self.session.t0_ns / NSEC)
-                        self._frame(self.session.elapsed_ns / NSEC, moving=moving,
-                                    update_gazebo=moving or changed)
+                        if self.scene_ready:
+                            self._frame(self.session.elapsed_ns / NSEC, moving=moving,
+                                        update_gazebo=moving or changed)
                         self.last_frame_ns = now
                     except Exception as exc:
                         self.session.abort('Gazebo scene update failed: ' + str(exc))
@@ -370,9 +456,11 @@ def main():
     for key in CONFIG:
         cfg[key] = rospy.get_param('~' + key, CONFIG[key])
     cfg['seed'] = validate_seed(cfg['seed'])
+    cfg['num_obstacles'] = validate_obstacle_count(cfg['num_obstacles'])
+    cfg['duration'] = validate_duration(cfg['duration'])
 
-    if cfg['num_obstacles'] <= 0 or cfg['duration'] <= 0:
-        raise ValueError('num_obstacles and duration must be positive')
+    if cfg['rate'] <= 0:
+        raise ValueError('rate must be positive')
     if cfg['min_speed'] <= 0 or cfg['max_speed'] < cfg['min_speed']:
         raise ValueError('Invalid speed range')
     if cfg['x_max'] <= cfg['x_min'] or cfg['y_max'] <= cfg['y_min']:
@@ -394,17 +482,18 @@ def main():
     rospy.wait_for_service('/gazebo/get_model_state')
     rospy.wait_for_service('/gazebo/spawn_sdf_model')
     rospy.wait_for_service('/gazebo/set_model_state')
+    rospy.wait_for_service('/gazebo/get_world_properties')
+    rospy.wait_for_service('/gazebo/delete_model')
 
     get_state = rospy.ServiceProxy('/gazebo/get_model_state', GetModelState)
     spawn = rospy.ServiceProxy('/gazebo/spawn_sdf_model', SpawnModel)
     set_state = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
 
-    for idx, track in enumerate(tracks):
-        _, x, y, _ = track[0]
-        ensure_model('obstacle_{}'.format(idx + 1), x, y, cfg, get_state, spawn)
+    models = SceneModels(rospy.ServiceProxy('/gazebo/get_world_properties', GetWorldProperties),
+                         get_state, spawn, rospy.ServiceProxy('/gazebo/delete_model', DeleteModel))
 
     coordinator = ObstacleExperiments(cfg, tracks, starts, set_state,
-                                       states_pub, done_pub)
+                                       states_pub, done_pub, models)
     coordinator.run()
 
 

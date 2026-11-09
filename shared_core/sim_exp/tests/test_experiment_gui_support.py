@@ -8,7 +8,7 @@ import unittest
 
 DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DIRECTORY))
-from experiment_protocol import validate_seed
+from experiment_protocol import validate_seed, validate_obstacle_count, validate_duration
 from gui_support import (belongs_to_launch, controller_command, controller_names,
                          normalize_namespace, state_is_fresh)
 
@@ -38,6 +38,22 @@ class LauncherTests(unittest.TestCase):
         for seed in (-1, 2147483648, True, "42", 1.2):
             with self.subTest(seed=seed), self.assertRaises(ValueError):
                 validate_seed(seed)
+
+    def test_obstacle_count_and_time_limit_are_included_in_the_child_arguments(self):
+        command = controller_command(DIRECTORY, "dwa_static.py", 42, "a" * 32,
+                                     "/sim_exp", num_obstacles=10, duration=5.5)
+        self.assertIn("_experiment_num_obstacles:=10", command)
+        self.assertIn("_experiment_duration:=5.5", command)
+
+    def test_invalid_scene_settings_are_rejected_before_launch(self):
+        for count in (-1, 1001, True, 3.5):
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                validate_obstacle_count(count)
+        self.assertEqual(validate_obstacle_count(0), 0)
+        for duration in (0, -1, float("nan"), float("inf"), True, "70", 86401):
+            with self.subTest(duration=duration), self.assertRaises(ValueError):
+                validate_duration(duration)
+        self.assertEqual(validate_duration(5.5), 5.5)
 
     def test_stale_or_other_launch_state_cannot_be_used_to_stop_a_new_child(self):
         state = {"launch_id": "a" * 32, "phase": "FINISHED"}

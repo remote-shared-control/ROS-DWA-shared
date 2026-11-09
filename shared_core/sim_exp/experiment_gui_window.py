@@ -8,13 +8,13 @@ import uuid
 
 from qt_compat import QtCore, QtGui, QtWidgets
 
-from experiment_protocol import ACTIVE, NSEC, TERMINAL
+from experiment_protocol import ACTIVE, NSEC, TERMINAL, MAX_OBSTACLES, MAX_DURATION
 from gui_ros_bridge import RosBridge
 from gui_support import (belongs_to_launch, controller_command, controller_names,
                          state_is_fresh)
 
 
-PHASE_LABELS = {"IDLE": "等待启动", "PREPARED": "场景已准备",
+PHASE_LABELS = {"IDLE": "等待启动", "PREPARING": "正在准备障碍物场景", "PREPARED": "场景已准备",
                 "ARMED": "等待共同起点", "RUNNING": "实验运行中",
                 "FINISHED": "实验完成", "CANCELLED": "实验已停止", "ABORTED": "实验中止"}
 
@@ -38,8 +38,8 @@ class ExperimentWindow(QtWidgets.QMainWindow):
         self.closing = False
         self.connection_error = ""
         self.setWindowTitle("DWA 实验控制台")
-        self.resize(920, 670)
-        self.setMinimumSize(760, 590)
+        self.resize(920, 780)
+        self.setMinimumSize(760, 700)
         self._build_ui()
         self.bridge.state_received.connect(self._on_state)
         self.bridge.message.connect(self._log)
@@ -83,8 +83,22 @@ class ExperimentWindow(QtWidgets.QMainWindow):
         self.seed.setRange(0, 2**31 - 1)
         self.seed.setValue(self.settings.value("seed", 42, type=int))
         self.seed.setMinimumHeight(34)
-        self.seed.setToolTip("相同 seed 生成相同的障碍物初始场景和轨迹。")
+        self.seed.setToolTip("相同 seed、数量和时间限制可复现障碍物场景。")
         form.addRow("场景种子 seed", self.seed)
+        self.num_obstacles = QtWidgets.QSpinBox()
+        self.num_obstacles.setRange(0, MAX_OBSTACLES)
+        self.num_obstacles.setValue(self.settings.value("num_obstacles", 40, type=int))
+        self.num_obstacles.setMinimumHeight(34)
+        self.num_obstacles.setToolTip("减少数量会删除多余模型；0 表示移除全部动态障碍物。")
+        form.addRow("障碍物数量", self.num_obstacles)
+        self.duration = QtWidgets.QDoubleSpinBox()
+        self.duration.setRange(0.1, MAX_DURATION)
+        self.duration.setDecimals(1)
+        self.duration.setSuffix(" s")
+        self.duration.setValue(self.settings.value("duration", 70.0, type=float))
+        self.duration.setMinimumHeight(34)
+        self.duration.setToolTip("从共同起点 t0 开始计算的 ROS 仿真时间。")
+        form.addRow("时间限制", self.duration)
         self.controller = QtWidgets.QComboBox()
         self.controller.addItems(controller_names(self.directory))
         saved = self.settings.value("controller", "dwa_simwaffi_new_midpoint_hybrid.py")
@@ -93,7 +107,7 @@ class ExperimentWindow(QtWidgets.QMainWindow):
             self.controller.setCurrentIndex(index)
         self.controller.setMinimumHeight(34)
         form.addRow("DWA 程序", self.controller)
-        note = QtWidgets.QLabel("相同 seed 可用于不同 DWA 程序的重复对比。")
+        note = QtWidgets.QLabel("保持 seed、数量和时限一致，可对比不同 DWA 程序。")
         note.setStyleSheet("color: #667789;")
         form.addRow("", note)
         layout.addWidget(config_group)
@@ -127,7 +141,7 @@ class ExperimentWindow(QtWidgets.QMainWindow):
         self.progress = QtWidgets.QProgressBar()
         self.progress.setRange(0, 1000)
         self.progress.setValue(0)
-        self.progress.setFormat("0.0 / 70 s")
+        self.progress.setFormat("0.0 / {:g} s".format(self.duration.value()))
         self.progress.setMinimumHeight(24)
         status_layout.addWidget(self.phase)
         status_layout.addWidget(self.detail)
@@ -167,7 +181,8 @@ class ExperimentWindow(QtWidgets.QMainWindow):
 
     def _refresh(self):
         fresh = state_is_fresh(self.remote, self.received_at, time.monotonic())
-        supported = fresh and "prepare_seed" in self.remote.get("capabilities", [])
+        supported = fresh and {"prepare_seed", "scene_settings"}.issubset(
+            self.remote.get("capabilities", []))
         running = self._process_running()
         remote_phase = self.remote.get("phase") if fresh else None
         can_start = (supported and not self.preview and not running and
@@ -175,7 +190,10 @@ class ExperimentWindow(QtWidgets.QMainWindow):
         self.start_button.setEnabled(bool(can_start))
         self.stop_button.setEnabled(running and not self.stopping)
         self.seed.setEnabled(not running)
+        self.num_obstacles.setEnabled(not running)
+        self.duration.setEnabled(not running)
         self.controller.setEnabled(not running)
+        self.duration_label.setText("{:g} s · 仿真时间".format(self.duration.value()))
         if self.preview:
             self.connection.setText("界面预览 · 未连接 ROS")
         elif not fresh:
@@ -201,17 +219,18 @@ class ExperimentWindow(QtWidgets.QMainWindow):
             self.detail.setText(self.connection_error)
         elif running and not own:
             self.progress.setValue(0)
-            self.progress.setFormat("0.0 / 70 s")
-            self.detail.setText("正在准备 {}，请求 seed={}。".format(
-                self.controller.currentText(), self.seed.value()))
+            self.progress.setFormat("0.0 / {:g} s".format(self.duration.value()))
+            self.detail.setText("正在准备 {}，seed={}，障碍物 {} 个，时限 {:g} s。".format(
+                self.controller.currentText(), self.seed.value(),
+                self.num_obstacles.value(), self.duration.value()))
         elif fresh:
             state = self.remote
             duration = state.get("duration_ns", 70 * NSEC) / NSEC
             elapsed = state.get("elapsed_ns", 0) / NSEC
-            self.duration_label.setText("{:g} s · 仿真时间".format(duration))
             self.progress.setValue(round(1000 * min(elapsed / max(duration, 0.001), 1.0)))
             self.progress.setFormat("{:.1f} / {:g} s".format(elapsed, duration))
             text = "master seed：{}".format(state.get("seed", "—"))
+            text += "  ·  障碍物：{}".format(state.get("num_obstacles", "—"))
             if state.get("run_id"):
                 text += "  ·  实验：" + state["run_id"][:10]
             if remote_phase == "ARMED":
@@ -233,10 +252,16 @@ class ExperimentWindow(QtWidgets.QMainWindow):
         self.stopping = False
         self.child_pid = 0
         command = controller_command(self.directory, self.controller.currentText(),
-                                     self.seed.value(), self.launch_id, self.namespace)
+                                     self.seed.value(), self.launch_id, self.namespace,
+                                     num_obstacles=self.num_obstacles.value(),
+                                     duration=self.duration.value())
         self.settings.setValue("seed", self.seed.value())
+        self.settings.setValue("num_obstacles", self.num_obstacles.value())
+        self.settings.setValue("duration", self.duration.value())
         self.settings.setValue("controller", self.controller.currentText())
-        self._log("启动 {}，seed={}".format(self.controller.currentText(), self.seed.value()))
+        self._log("启动 {}，seed={}，障碍物={}，时间限制={:g} s".format(
+            self.controller.currentText(), self.seed.value(),
+            self.num_obstacles.value(), self.duration.value()))
         process = QtCore.QProcess(self)
         self.process = process
         process.setWorkingDirectory(str(self.directory))

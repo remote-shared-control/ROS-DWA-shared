@@ -79,16 +79,19 @@ class QtGuiTests(unittest.TestCase):
         self.app.processEvents()
 
     def remote(self, **fields):
-        state = {"protocol": 1, "capabilities": ["prepare_seed"], "phase": "IDLE",
-                 "launch_id": "", "seed": 42, "duration_ns": 70_000_000_000,
+        state = {"protocol": 1, "capabilities": ["prepare_seed", "scene_settings"], "phase": "IDLE",
+                 "launch_id": "", "seed": 42, "num_obstacles": 40,
+                 "duration_ns": 70_000_000_000,
                  "elapsed_ns": 0, "run_id": "", "reason": ""}
         state.update(fields)
         self.bridge.state_received.emit(state)
         self.app.processEvents()
 
-    def start(self, seed=17):
+    def start(self, seed=17, num_obstacles=40, duration=70.0):
         self.remote()
         self.window.seed.setValue(seed)
+        self.window.num_obstacles.setValue(num_obstacles)
+        self.window.duration.setValue(duration)
         self.window.start_button.click()
         self.until(lambda: self.window.child_pid > 0)
         self.until(lambda: "_experiment_seed:=" in self.window.log.toPlainText())
@@ -105,15 +108,21 @@ class QtGuiTests(unittest.TestCase):
         self.assertFalse(self.window.start_button.isEnabled())
 
     def test_selected_seed_launches_real_child_and_old_finish_does_not_stop_it(self):
-        process = self.start(seed=123)
+        process = self.start(seed=123, num_obstacles=10, duration=5.5)
         self.assertIn("_experiment_seed:=123", self.window.log.toPlainText())
+        self.assertIn("_experiment_num_obstacles:=10", self.window.log.toPlainText())
+        self.assertIn("_experiment_duration:=5.5", self.window.log.toPlainText())
         self.assertFalse(self.window.start_button.isEnabled())
+        self.assertFalse(self.window.num_obstacles.isEnabled())
+        self.assertFalse(self.window.duration.isEnabled())
         self.assertEqual(os.getpgid(self.window.child_pid), self.window.child_pid)
         self.window.start_experiment()
         self.assertIs(self.window.process, process)
         self.remote(phase="FINISHED", launch_id="f" * 32, run_id="old")
         self.assertTrue(self.window._process_running())
         self.assertEqual(self.window.settings.value("seed", type=int), 123)
+        self.assertEqual(self.window.settings.value("num_obstacles", type=int), 10)
+        self.assertEqual(self.window.settings.value("duration", type=float), 5.5)
 
     def test_matching_70s_finish_cleans_up_and_allows_next_run(self):
         self.start()
@@ -126,6 +135,22 @@ class QtGuiTests(unittest.TestCase):
         self.window.start_button.click()
         self.until(lambda: self.window.child_pid > 0)
         self.assertNotEqual(self.window.launch_id, token)
+
+    def test_custom_time_limit_updates_progress_and_cleans_up_at_its_own_end(self):
+        self.start(num_obstacles=3, duration=5.5)
+        self.remote(phase="RUNNING", launch_id=self.window.launch_id, run_id="a" * 32,
+                    num_obstacles=3, duration_ns=5_500_000_000, elapsed_ns=2_750_000_000)
+        self.assertEqual(self.window.progress.value(), 500)
+        self.assertIn("障碍物：3", self.window.detail.text())
+        self.remote(phase="FINISHED", launch_id=self.window.launch_id, run_id="a" * 32,
+                    num_obstacles=3, duration_ns=5_500_000_000, elapsed_ns=5_500_000_000)
+        self.until(lambda: not self.window._process_running())
+        self.assertEqual(self.window.progress.value(), 1000)
+        self.assertEqual(self.window.progress.format(), "5.5 / 5.5 s")
+
+    def test_old_seed_only_master_cannot_silently_ignore_quantity_and_time(self):
+        self.remote(capabilities=["prepare_seed"])
+        self.assertFalse(self.window.start_button.isEnabled())
 
     def test_stop_cancels_only_our_remote_run_and_terminates_the_child(self):
         self.start()

@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sys
 
-from experiment_protocol import validate_seed
+from experiment_protocol import validate_seed, validate_obstacle_count, validate_duration
 
 
 def controller_names(directory):
@@ -25,11 +25,13 @@ def normalize_namespace(namespace):
 
 
 def controller_command(directory, controller, seed, launch_id, namespace,
-                       python=None):
+                       python=None, num_obstacles=40, duration=70.0):
     directory = Path(directory).resolve()
     if controller not in controller_names(directory):
         raise ValueError("Choose a controller from sim_exp")
     validate_seed(seed)
+    validate_obstacle_count(num_obstacles)
+    duration = validate_duration(duration)
     if not re.fullmatch(r"[0-9a-f]{32}", launch_id):
         raise ValueError("Invalid launch ID")
     namespace = normalize_namespace(namespace)
@@ -37,6 +39,8 @@ def controller_command(directory, controller, seed, launch_id, namespace,
         python or sys.executable, str(directory / "run_experiment.py"),
         "--new-session", "--controller", controller,
         "__name:=shared_dwa", "_experiment_seed:=" + str(seed),
+        "_experiment_num_obstacles:=" + str(num_obstacles),
+        "_experiment_duration:=" + repr(duration),
         "_experiment_launch_id:=" + json.dumps(launch_id),
         "_experiment_controller:=" + json.dumps(controller),
         "_experiment_namespace:=" + namespace,

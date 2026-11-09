@@ -8,6 +8,7 @@ from copy import deepcopy
 import heapq
 import json
 import random
+import re
 import threading
 import time
 import uuid
@@ -17,7 +18,7 @@ from unittest.mock import Mock
 
 from test_experiment_finish import CONTROLLERS, Twist, components, load_controller
 from test_experiment_sync import Message, definitions
-from experiment_protocol import ACTIVE, NSEC, Session, StartGate, validate_seed
+from experiment_protocol import ACTIVE, NSEC, Session, StartGate, validate_seed, validate_obstacle_count, validate_duration
 
 
 def until(predicate, timeout=3.0):
@@ -35,6 +36,9 @@ class RosBus:
         self.services, self.callbacks, self.latched = {}, {}, {}
         self.lock = threading.RLock()
         self.positions = {}
+        self.other_models = {"limo", "ground_plane", "obstacle_static"}
+        self.deleted = []
+        self.spawned = []
         self.messages = {}
         self.commands = []
         self.threads = []
@@ -95,7 +99,25 @@ class RosBus:
             return handler(Message(config=args[0]) if args else Message())
         return call
 
+    def get_world(self):
+        return SimpleNamespace(success=True, model_names=[*self.other_models, *self.positions])
+
+    def get_model(self, name, _frame):
+        return SimpleNamespace(success=name in self.positions)
+
+    def spawn_model(self, name, _sdf, _namespace, pose, _frame):
+        self.positions[name] = (pose.position.x, pose.position.y, pose.position.z)
+        self.spawned.append(name)
+        return SimpleNamespace(success=True)
+
+    def delete_model(self, name):
+        self.positions.pop(name)
+        self.deleted.append(name)
+        return SimpleNamespace(success=True)
+
     def set_model_state(self, state):
+        if state.model_name not in self.positions:
+            return SimpleNamespace(success=False, status_message="Model is missing")
         self.positions[state.model_name] = (
             state.pose.position.x, state.pose.position.y, state.pose.position.z)
         return SimpleNamespace(success=True)
@@ -114,18 +136,20 @@ class RepeatedExperimentTests(unittest.TestCase):
             "ModelStates": lambda: SimpleNamespace(name=[], pose=[], twist=[]),
             "String": Message, "Int32": Message, "Trigger": object(),
             "TriggerResponse": Message, "bisect": bisect, "random": random,
-            "heapq": heapq, "validate_seed": validate_seed, "Reconfigure": object(),
-            "ReconfigureResponse": Message, "IntParameter": Message, "StrParameter": Message,
+            "heapq": heapq, "re": re, "validate_seed": validate_seed, "Reconfigure": object(),
+            "validate_obstacle_count": validate_obstacle_count, "validate_duration": validate_duration,
+            "CYLINDER_SDF": "model {name} radius {radius} length {length}",
+            "ReconfigureResponse": Message, "IntParameter": Message, "StrParameter": Message, "DoubleParameter": Message,
             "DynamicConfig": lambda: Message(ints=[], strs=[]),
         }
         definitions("dynamic_obstacles.py", {
             "plan_scene", "choose_respawn_y", "state_at", "make_pose",
-            "publish_frame", "ObstacleExperiments",
+            "publish_frame", "ensure_model", "SceneModels", "ObstacleExperiments",
         }, namespace)
         self.cfg = {
             "num_obstacles": 40, "x_min": 0.5, "x_max": 14.0,
             "y_min": -4.0, "y_max": 4.0, "min_speed": 0.6, "max_speed": 1.0,
-            "height": 0.2, "duration": 70.0, "seed": 42, "rate": 20,
+            "height": 0.2, "radius": 0.15, "length": 0.4, "duration": 70.0, "seed": 42, "rate": 20,
             "respawn_time_window": 4.0, "min_y_gap": 0.8,
         }
         self.tracks, self.starts = namespace["plan_scene"](self.cfg)
@@ -133,7 +157,9 @@ class RepeatedExperimentTests(unittest.TestCase):
         self.server = namespace["ObstacleExperiments"](
             self.cfg, self.tracks, self.starts, self.ros.set_model_state,
             self.ros.Publisher("/dynamic_obstacle_states", object(), latch=True),
-            self.ros.Publisher("/dynamic_obstacle_finished", object(), latch=True))
+            self.ros.Publisher("/dynamic_obstacle_finished", object(), latch=True),
+            namespace["SceneModels"](self.ros.get_world, self.ros.get_model,
+                                     self.ros.spawn_model, self.ros.delete_model))
         self.server_thread = threading.Thread(target=self.server.run, daemon=True)
         self.server_thread.start()
         client_ns = definitions("experiment_sync.py", {"ExperimentClient"}, {
@@ -141,7 +167,8 @@ class RepeatedExperimentTests(unittest.TestCase):
             "NSEC": NSEC, "StartGate": StartGate, "Twist": Twist,
             "String": Message, "Int32": Message, "Odometry": object(),
             "Trigger": object(), "Reconfigure": object(), "validate_seed": validate_seed,
-            "IntParameter": Message, "StrParameter": Message,
+            "validate_obstacle_count": validate_obstacle_count, "validate_duration": validate_duration,
+            "IntParameter": Message, "StrParameter": Message, "DoubleParameter": Message,
             "DynamicConfig": lambda: Message(ints=[], strs=[]),
         })
         self.Client = client_ns["ExperimentClient"]
@@ -253,6 +280,36 @@ class RepeatedExperimentTests(unittest.TestCase):
             client.close()
         self.assertEqual(initial_scenes[0], initial_scenes[1])
         self.assertNotEqual(initial_scenes[0], initial_scenes[2])
+
+    def test_count_and_time_limit_change_across_runs_and_surplus_models_are_deleted(self):
+        previous_count = 40
+        for count, duration in ((40, 70.0), (10, 5.5), (0, 0.5), (25, 20.0)):
+            with self.subTest(count=count, duration=duration):
+                self.ros.params.update({"~experiment_seed": 42,
+                                        "~experiment_num_obstacles": count,
+                                        "~experiment_duration": duration,
+                                        "~experiment_launch_id": uuid.uuid4().hex})
+                deleted_before = len(self.ros.deleted)
+                client, runtime, publisher, command, initial = self.start(CONTROLLERS[0])
+                self.assertEqual(len(initial), count)
+                self.assertEqual(self.server.session.num_obstacles, count)
+                duration_ns = round(duration * NSEC)
+                self.assertEqual(client.gate.end_ns - client.gate.t0_ns, duration_ns)
+                self.assertEqual(len(self.ros.deleted) - deleted_before,
+                                 max(previous_count - count, 0))
+                self.advance(client.gate.t0_ns + duration_ns - 1)
+                runtime.publish_velocity(publisher, command)
+                self.assertEqual(self.ros.commands[-1][1][0], 0.6)
+                self.advance(client.gate.t0_ns + duration_ns)
+                runtime.publish_velocity(publisher, command)
+                self.assertEqual(self.ros.commands[-1][1], (0.0,) * 6)
+                self.assertEqual(self.server.session.phase, "FINISHED")
+                states = self.ros.messages["/dynamic_obstacle_states"]
+                self.assertEqual(len(states.name), count)
+                self.assertTrue(all(item.linear.x == 0.0 for item in states.twist))
+                self.assertEqual(self.ros.other_models, {"limo", "ground_plane", "obstacle_static"})
+                client.close()
+                previous_count = count
 
 
 if __name__ == "__main__":

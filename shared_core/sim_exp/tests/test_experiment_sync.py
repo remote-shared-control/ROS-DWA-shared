@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DIRECTORY))
-from experiment_protocol import ACTIVE, NSEC, Session, StartGate, validate_seed
+from experiment_protocol import ACTIVE, NSEC, Session, StartGate, validate_seed, validate_obstacle_count, validate_duration
 
 
 class ProtocolTests(unittest.TestCase):
@@ -151,14 +151,17 @@ class ObstacleAdapterTests(unittest.TestCase):
                 monotonic=lambda: self.wall, sleep=Mock()),
             "json": json, "String": Message, "Int32": Message,
             "Trigger": object(), "TriggerResponse": Message, "Reconfigure": object(),
-            "validate_seed": validate_seed,
-            "IntParameter": Message, "StrParameter": Message,
+            "validate_seed": validate_seed, "validate_obstacle_count": validate_obstacle_count,
+            "validate_duration": validate_duration,
+            "IntParameter": Message, "StrParameter": Message, "DoubleParameter": Message,
             "ReconfigureResponse": Message,
             "DynamicConfig": lambda: Message(ints=[], strs=[]),
             "publish_frame": self.frame,
+            "ModelStates": lambda: Message(name=[], pose=[], twist=[]),
         })
         self.server = self.ns["ObstacleExperiments"](
-            {"duration": 70.0, "rate": 20, "seed": 42}, [], [], Mock(), Mock(), Mock())
+            {"duration": 70.0, "rate": 20, "seed": 42, "num_obstacles": 40},
+            [], [], Mock(), Mock(), Mock(), Mock())
 
     def test_seed_request_plans_and_prepares_one_atomic_experiment(self):
         planner = self.ns["plan_scene"] = Mock(return_value=(["new tracks"], ["new starts"]))
@@ -213,6 +216,19 @@ class ObstacleAdapterTests(unittest.TestCase):
         response = self.server._prepare(None)
         self.assertFalse(response.success)
         self.assertEqual(self.server.session.t0_ns, 0)
+
+    def test_model_cleanup_failure_aborts_and_cannot_arm_the_robot(self):
+        self.server.models.sync.side_effect = RuntimeError("Surplus model deletion failed")
+        self.frame.reset_mock()
+        response = self.server._prepare(None)
+        self.assertFalse(response.success)
+        self.assertEqual(self.server.session.phase, "ABORTED")
+        self.assertFalse(self.server.scene_ready)
+        self.frame.assert_not_called()
+        self.assertFalse(self.server._arm(self.server.session.run_id).success)
+        self.ns["rospy"].is_shutdown.side_effect = [False, True]
+        self.server.run()
+        self.frame.assert_not_called()
 
     def test_old_cancel_does_not_reset_next_experiment_models(self):
         self.server._prepare(None)

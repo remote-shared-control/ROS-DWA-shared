@@ -26,7 +26,7 @@ sudo apt install ros-noetic-dynamic-reconfigure
 python3 dynamic_obstacles.py
 ```
 
-master 端不需要 GUI，也不需要每次修改 seed 参数或重启障碍物程序。
+master 端不需要 GUI，也不需要每次修改 seed、数量、时限参数或重启障碍物程序。
 
 在 robot 端已经 source ROS 和工作区的终端，从仓库根目录打开 GUI：
 
@@ -41,11 +41,12 @@ roslaunch shared_core sim_exp_gui.launch
 ```
 
 1. 等待界面显示 `master 已连接`。
-2. 输入 seed（0～2147483647，默认 42），选择一个 DWA 程序。
-3. 点击“启动实验”。seed 随本次服务请求原子地传给 master，master 重新生成/复位
-   对应场景；DWA 与障碍物按共同 t0 放行。
-4. GUI 显示 master 实际接受的 seed、阶段、70 秒仿真进度和 DWA 输出日志。
-5. 70 秒结束后 GUI 自动关闭本次 DWA 子进程，master 保持待命；可选择新 seed/算法
+2. 输入 seed（0～2147483647，默认 42）、障碍物数量（0～1000，默认 40）、时间限制
+   （0.1～86400 秒，默认 70 秒），选择一个 DWA 程序。时间限制采用 ROS 仿真时间。
+3. 点击“启动实验”。这些设置在同一次服务请求中传给 master。master 查询实际世界，
+   删除多余模型、补建缺少模型、复位场景并核对数量；准备成功后按共同 t0 放行。
+4. GUI 显示 master 接受的 seed、数量、阶段、所设时限对应的进度和 DWA 输出日志。
+5. 到达设置的时间限制后 GUI 自动关闭本次 DWA 子进程，master 保持待命；可选择新配置
    再次启动。命令行直接启动的 DWA 仍保留原来的“结束后持续发布零速度”行为。
 
 “停止实验”和关闭 GUI 都会停止 GUI 自己启动的 DWA，并取消它对应的远端实验。
@@ -53,7 +54,9 @@ roslaunch shared_core sim_exp_gui.launch
 master 正在运行另一场实验时，启动按钮不可用。GUI 与 master 的状态连接超时，也会
 停止本次子进程。不要同时运行另一个手动 DWA / cmd_vel 控制器。
 
-界面会记住上次的 seed 和程序选择。`--namespace /sim_exp` 可选择实验命名空间；
+界面会记住上次的 seed、数量、时间限制和程序选择。运行时输入框锁定，下一次实验再应用新值。
+旧版 master 不支持数量/时限控制时，GUI 会禁用启动按钮，需同时更新上述两个 master 文件。
+`--namespace /sim_exp` 可选择实验命名空间；
 `--preview` 可在不连接 ROS、不启动 DWA 的情况下预览界面。较新 Python 环境也可使用
 PySide6 核心窗口组件作为兼容绑定；Ubuntu Noetic 上优先使用上面的 PyQt5 安装方式。
 
@@ -100,17 +103,19 @@ python3 shared_core/sim_exp/dwa_simwaffi_new_midpoint_hybrid.py
 ## 同步流程
 
 1. DWA 初始化后持续发送零速度，调用 `/sim_exp/prepare`。
-2. 障碍物端复位全部模型、发布静止初始帧，再分配本次 `run_id`。
+2. 障碍物端分配本次 `run_id`，进入 PREPARING；核对实际模型、删除/补建并复位后，
+   发布静止初始帧，进入 PREPARED。准备期间持续更新状态，尚未允许运动。
 3. DWA 收到里程计和本次准备状态后调用本次的 `arm` 服务。
 4. master 端预约 `t0 = 当前 ROS 时间 + start_delay` 并返回；重复 arm 不会改变 t0。
 5. 两边到 t0 才允许运动。DWA 的实验时间和障碍物轨迹时间均为 `now - t0`。
-6. 到达 70 秒，双方停止；DWA 退出、心跳丢失、服务错误或时钟回退也会中止实验。
+6. 到达本次时间限制（默认 70 秒），双方停止；DWA 退出、心跳丢失、服务错误或时钟回退也会中止实验。
 
 无 seed 的命令行启动采用 ROS 自带的 `std_srvs/Trigger`。GUI 启动使用标准
 `dynamic_reconfigure/Reconfigure` 调用 `/sim_exp/prepare_seed`，在同一次请求中传送
-seed、GUI 启动编号和程序名，并完成场景准备；运行中拒绝改 seed。两种响应都携带
-JSON 实验状态（包括 run_id、seed、启动编号、t0、时长和阶段），无需生成自定义服务
-或修改相邻的 CMake/package.xml。旧命令行启动沿用 master 当前选中的 seed。
+seed、障碍物数量、时限、GUI 启动编号和程序名，并完成场景准备；运行中拒绝改配置。
+整数参数使用 `seed`、`num_obstacles`，浮点参数使用 `duration`。两种响应都携带
+JSON 实验状态（包括 run_id、seed、数量、启动编号、t0、时长和阶段），无需生成自定义服务
+或修改相邻的 CMake/package.xml。旧命令行启动沿用 master 当前选中的场景配置。
 每个 run_id 有独立的 `/sim_exp/runs/<run_id>/arm` 和 `cancel` 服务，旧客户端不能
 取消下一次实验。`/sim_exp/state` 发布带编号的锁存状态，DWA 忽略上次的完成状态。
 `/dynamic_obstacle_states`、`/dynamic_obstacle_finished` 仍保留，实验副本使用前者
@@ -121,6 +126,21 @@ JSON 实验状态（包括 run_id、seed、启动编号、t0、时长和阶段�
 prepare 响应丢失时，未认领的预约在 30 秒墙上时间后失效。DWA 发送本次编号的心跳；
 master 默认在 3 秒无心跳后冻结障碍物。DWA 同样在 3 秒无状态后持续输出零速度。
 网络完全断开时，远端停止由该超时保障，无法保证即时取消。
+
+## 多余障碍物的删除
+
+master 启动时及每次实验准备时，都通过 `/gazebo/get_world_properties` 查询实际模型，
+管理名称匹配 `obstacle_<整数>` 的模型。若本次数量是 N，保留 `obstacle_1` 到
+`obstacle_N`，通过 `/gazebo/delete_model` 删除其余受管理模型，并补建缺少的模型。
+这个过程能清理上次程序退出后遗留在 Gazebo 中的模型，不依赖进程内记录的旧数量。
+
+例如从 40 个改为 10 个，会真正删除 `obstacle_11` 到 `obstacle_40`；设为 0 会删除
+全部受管理动态障碍物。机器人、地面和 `obstacle_static` 等非数字后缀模型会保留。
+删除/补建后再次查询世界，确认实际模型集合与目标一致，才允许开始计时和移动。
+任何删除失败、缺失模型或残留模型都会阻止启动，界面和日志显示失败原因。
+
+到达时限后，本次保留的 N 个模型按原方式冻结；下一次调低数量时会删除多出来的模型。
+master 端仍只运行 `python3 dynamic_obstacles.py`，所有 Gazebo 服务调用都在该进程内完成。
 
 原来的 `RECORDER` / `RECORDER_CSV` 开关保留。启用 rosbag 时，记录仍在等待起点前
 启动，因此 bag 可包含准备阶段；结果计时和坐标距离从本次 t0 放行处开始计算。
