@@ -5,7 +5,6 @@ This verifies application behavior, not ROS transport or Gazebo physics.
 
 import bisect
 from copy import deepcopy
-import heapq
 import json
 import random
 import re
@@ -136,21 +135,20 @@ class RepeatedExperimentTests(unittest.TestCase):
             "ModelStates": lambda: SimpleNamespace(name=[], pose=[], twist=[]),
             "String": Message, "Int32": Message, "Trigger": object(),
             "TriggerResponse": Message, "bisect": bisect, "random": random,
-            "heapq": heapq, "re": re, "validate_seed": validate_seed, "Reconfigure": object(),
+            "re": re, "validate_seed": validate_seed, "Reconfigure": object(),
             "validate_obstacle_count": validate_obstacle_count, "validate_duration": validate_duration,
             "CYLINDER_SDF": "model {name} radius {radius} length {length}",
             "ReconfigureResponse": Message, "IntParameter": Message, "StrParameter": Message, "DoubleParameter": Message,
             "DynamicConfig": lambda: Message(ints=[], strs=[]),
         }
         definitions("dynamic_obstacles.py", {
-            "plan_scene", "choose_respawn_y", "state_at", "make_pose",
+            "plan_scene", "state_at", "make_pose",
             "publish_frame", "ensure_model", "SceneModels", "ObstacleExperiments",
         }, namespace)
         self.cfg = {
-            "num_obstacles": 40, "x_min": 0.5, "x_max": 14.0,
-            "y_min": -4.0, "y_max": 4.0, "min_speed": 0.6, "max_speed": 1.0,
+            "num_obstacles": 40, "right_crossing_x": 3.0, "left_crossing_x": 6.0,
+            "y_min": -7.0, "y_max": 7.0, "min_speed": 0.6, "max_speed": 0.8,
             "height": 0.2, "radius": 0.15, "length": 0.4, "duration": 70.0, "seed": 42, "rate": 20,
-            "respawn_time_window": 4.0, "min_y_gap": 0.8,
         }
         self.tracks, self.starts = namespace["plan_scene"](self.cfg)
         self.state_at = namespace["state_at"]
@@ -240,10 +238,10 @@ class RepeatedExperimentTests(unittest.TestCase):
                 self.assertEqual(self.ros.commands[-1][1], (0.0,) * 6)
                 self.assertEqual(self.server.session.phase, "FINISHED")
                 self.assertEqual(self.server.session.elapsed_ns, 70 * NSEC)
-                self.assertTrue(all(t.linear.x == 0.0 for t in
+                self.assertTrue(all((t.linear.x, t.linear.y) == (0.0, 0.0) for t in
                                     self.ros.messages["/dynamic_obstacle_states"].twist))
                 for idx, (track, starts) in enumerate(zip(self.tracks, self.starts)):
-                    x, y, _ = self.state_at(track, starts, 70.0, self.cfg)
+                    x, y, _, _ = self.state_at(track, starts, 70.0, self.cfg)
                     self.assertEqual(self.ros.positions[f"obstacle_{idx + 1}"], (x, y, 0.2))
                 final = dict(self.ros.positions)
                 self.advance(t0 + 71 * NSEC)
@@ -306,7 +304,7 @@ class RepeatedExperimentTests(unittest.TestCase):
                 self.assertEqual(self.server.session.phase, "FINISHED")
                 states = self.ros.messages["/dynamic_obstacle_states"]
                 self.assertEqual(len(states.name), count)
-                self.assertTrue(all(item.linear.x == 0.0 for item in states.twist))
+                self.assertTrue(all((item.linear.x, item.linear.y) == (0.0, 0.0) for item in states.twist))
                 self.assertEqual(self.ros.other_models, {"limo", "ground_plane", "obstacle_static"})
                 client.close()
                 previous_count = count

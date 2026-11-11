@@ -7,7 +7,6 @@ function of elapsed ROS simulation time. Changing ~seed changes the scene.
 """
 
 import bisect
-import heapq
 import random
 import re
 import json
@@ -29,20 +28,18 @@ from experiment_protocol import (ACTIVE, NSEC, Session, validate_seed,
 
 CONFIG = {
     'num_obstacles': 40,
-    'x_min': 0.5,
-    'x_max': 14.0,
-    'y_min': -4.0,
-    'y_max': 4.0,
+    'right_crossing_x': 3.0,
+    'left_crossing_x': 6.0,
+    'y_min': -7.0,
+    'y_max': 7.0,
     'min_speed': 0.6,
-    'max_speed': 1.0,
+    'max_speed': 0.8,
     'radius': 0.15,
     'length': 0.4,
     'height': 0.2,
     'rate': 20,
     'duration': 70.0,
     'seed': 42,
-    'respawn_time_window': 4.0,
-    'min_y_gap': 0.8,
 }
 
 CYLINDER_SDF = """<?xml version="1.0"?>
@@ -82,80 +79,56 @@ def make_pose(x, y, z):
     return pose
 
 
-def choose_respawn_y(rng, history, t, cfg):
-    """Separate recent entry lanes, selecting best available if saturated."""
-    window = cfg['respawn_time_window']
-    recent = [y for previous_t, y in history if t - previous_t < window]
-    low, high = cfg['y_min'], cfg['y_max']
-
-    for _ in range(200):
-        y = rng.uniform(low, high)
-        if all(abs(y - other) >= cfg['min_y_gap'] for other in recent):
-            history.append((t, y))
-            return y
-
-    # At high respawn density no 0.8 m lane may exist. Use the safest gap.
-    candidates = [low + (high - low) * i / 160.0 for i in range(161)]
-    rng.shuffle(candidates)  # deterministic tie-breaking under the seed
-    y = max(candidates, key=lambda cand: min(
-        (abs(cand - old) for old in recent), default=float('inf')))
-    history.append((t, y))
-    return y
-
-
 def plan_scene(cfg):
-    """Precompute every trajectory segment so callback delays cannot affect it.
+    """Precompute two opposite crossing streams in the robot's +x heading.
 
-    Segment tuple: (start_elapsed_time, start_x, y, speed).
+    Odd model IDs cross right (-y) at right_crossing_x; even IDs cross left
+    (+y) at left_crossing_x. Segment: (start_time, x, start_y, vx, vy).
+    Each obstacle keeps its seeded speed for the entire experiment. Recycling
+    takes place only at the outer y boundaries, without reversing direction.
     """
     rng = random.Random(cfg['seed'])
     n = cfg['num_obstacles']
     if n == 0:
         return [], []
-    nx = 5 if n >= 20 else max(1, round(n ** 0.5))
-    ny = (n + nx - 1) // nx
-    dx = (cfg['x_max'] - cfg['x_min']) / nx
-    dy = (cfg['y_max'] - cfg['y_min']) / ny
-
-    cells = [(col, row) for row in range(ny) for col in range(nx)]
-    rng.shuffle(cells)
-    cells = cells[:n]
-
-    tracks = []
-    for idx, (col, row) in enumerate(cells):
-        # Keep one obstacle in each grid cell, jitter within its center 60%.
-        x = cfg['x_min'] + (col + 0.5 + rng.uniform(-0.30, 0.30)) * dx
-        y = cfg['y_min'] + (row + 0.5 + rng.uniform(-0.30, 0.30)) * dy
-        speed = rng.uniform(cfg['min_speed'], cfg['max_speed'])
-        tracks.append([(0.0, x, y, speed)])
-
-    # Generate respawns in globally chronological order. Their y-values are
-    # independent of ROS loop timing, service latency, and update frequency.
-    queue = []
-    for idx, track in enumerate(tracks):
-        _, x, _, speed = track[-1]
-        heapq.heappush(queue, ((x - cfg['x_min']) / speed, idx))
-
-    history = []
-    while queue:
-        t, idx = heapq.heappop(queue)
-        if t > cfg['duration']:
-            break
-        y = choose_respawn_y(rng, history, t, cfg)
-        speed = rng.uniform(cfg['min_speed'], cfg['max_speed'])
-        tracks[idx].append((t, cfg['x_max'], y, speed))
-        next_t = t + (cfg['x_max'] - cfg['x_min']) / speed
-        heapq.heappush(queue, (next_t, idx))
-
+    low, high = cfg['y_min'], cfg['y_max']
+    span = high - low
+    tracks = [None] * n
+    for group in (0, 1):
+        model_indices = list(range(group, n, 2))
+        count = len(model_indices)
+        if not count:
+            continue
+        cells = list(range(count))
+        rng.shuffle(cells)
+        x = cfg['right_crossing_x'] if group == 0 else cfg['left_crossing_x']
+        direction = -1.0 if group == 0 else 1.0
+        exit_y = low if direction < 0 else high
+        entry_y = high if direction < 0 else low
+        for idx, cell in zip(model_indices, cells):
+            # One initial center per cell in each stream, with seeded jitter.
+            y0 = low + (cell + rng.uniform(0.20, 0.80)) * span / count
+            speed = rng.uniform(cfg['min_speed'], cfg['max_speed'])
+            vy = direction * speed
+            track = [(0.0, x, y0, 0.0, vy)]
+            next_entry = abs(exit_y - y0) / speed
+            lap_time = span / speed
+            while next_entry <= cfg['duration']:
+                track.append((next_entry, x, entry_y, 0.0, vy))
+                next_entry += lap_time
+            tracks[idx] = track
     starts = [[segment[0] for segment in track] for track in tracks]
     return tracks, starts
 
 
 def state_at(track, start_times, t, cfg):
-    index = bisect.bisect_right(start_times, t) - 1
-    start_t, x0, y, speed = track[max(0, index)]
-    x = max(cfg['x_min'], x0 - speed * (t - start_t))
-    return x, y, -speed
+    elapsed = min(max(t, 0.0), cfg['duration'])
+    index = max(0, bisect.bisect_right(start_times, elapsed) - 1)
+    start_t, x, y0, vx, vy = track[index]
+    y = y0 + vy * (elapsed - start_t)
+    # Clamp floating-point roundoff immediately before a recycle boundary.
+    y = min(cfg['y_max'], max(cfg['y_min'], y))
+    return x, y, vx, vy
 
 
 def ensure_model(name, x, y, cfg, get_state, spawn):
@@ -177,7 +150,7 @@ def publish_frame(t, tracks, starts, cfg, set_state, states_pub,
     finished = t >= cfg['duration']
 
     for idx, (track, times) in enumerate(zip(tracks, starts)):
-        x, y, vx = state_at(track, times, t, cfg)
+        x, y, vx, vy = state_at(track, times, t, cfg)
         name = 'obstacle_{}'.format(idx + 1)
         pose = make_pose(x, y, cfg['height'])
 
@@ -195,6 +168,7 @@ def publish_frame(t, tracks, starts, cfg, set_state, states_pub,
 
         twist = Twist()
         twist.linear.x = vx if moving and not finished else 0.0
+        twist.linear.y = vy if moving and not finished else 0.0
         states.name.append(name)
         states.pose.append(pose)
         states.twist.append(twist)
@@ -233,7 +207,7 @@ class SceneModels:
         for idx, track in enumerate(tracks):
             if progress:
                 progress()
-            _, x, y, _ = track[0]
+            x, y = track[0][1:3]
             ensure_model('obstacle_{}'.format(idx + 1), x, y, cfg, self.get_state, self.spawn)
         # A successful deletion response alone is not enough: inspect the world.
         deadline = time.monotonic() + self.verify_timeout
@@ -463,11 +437,16 @@ def main():
         raise ValueError('rate must be positive')
     if cfg['min_speed'] <= 0 or cfg['max_speed'] < cfg['min_speed']:
         raise ValueError('Invalid speed range')
-    if cfg['x_max'] <= cfg['x_min'] or cfg['y_max'] <= cfg['y_min']:
-        raise ValueError('Invalid position ranges')
+    if cfg['y_max'] <= cfg['y_min']:
+        raise ValueError('Invalid y position range')
+    if cfg['right_crossing_x'] >= cfg['left_crossing_x']:
+        raise ValueError('right_crossing_x must be smaller than left_crossing_x')
 
     rospy.loginfo('Planning scene: seed=%s, duration=%.1f s, models=%d',
                   cfg['seed'], cfg['duration'], cfg['num_obstacles'])
+    rospy.loginfo('Crossings: x=%.2f right (-y), x=%.2f left (+y), speed=%.2f..%.2f m/s',
+                  cfg['right_crossing_x'], cfg['left_crossing_x'],
+                  cfg['min_speed'], cfg['max_speed'])
     tracks, starts = plan_scene(cfg)
 
     states_pub = rospy.Publisher('/dynamic_obstacle_states', ModelStates,

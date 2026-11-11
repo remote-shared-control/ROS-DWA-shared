@@ -4,6 +4,28 @@
 `direct.py` 均通过共同 ROS 仿真起点放行，DWA/TTC 计算、候选速度和已有记录开关
 保持原值。`sim` 和包外的构建配置未修改。
 
+## 当前环境：两处反向横穿
+
+以机器人初始朝世界坐标 `+x` 前进为参照，左侧为 `+y`，右侧为 `-y`：
+
+| 分组 | 横穿位置 | 方向 | 发布速度 |
+| --- | --- | --- | --- |
+| `obstacle_1`、`obstacle_3` 等奇数编号 | `x=3 m` | 向右，沿 `-y` | `vx=0`，`vy=-0.6～-0.8 m/s` |
+| `obstacle_2`、`obstacle_4` 等偶数编号 | `x=6 m` | 向左，沿 `+y` | `vx=0`，`vy=+0.6～+0.8 m/s` |
+
+GUI 设置的数量是两组总数，奇数数量时 3 m 组多一个。每个模型的速度由 seed
+生成，在本次实验中保持恒定；seed 也决定初始 y 分布。模型只沿 y 移动，x 保持不变。
+默认 y 范围为 `[-7,7] m`，离开边界后从另一侧重新进入，方向和速度不变。
+所有段按 ROS 经过时间预先计算，因此循环延迟和采样顺序不会改变场景轨迹。
+
+master 参数 `~right_crossing_x`、`~left_crossing_x` 可调整两个横穿位置，
+`~y_min`、`~y_max` 调整循环边界；默认速度参数为 `~min_speed=0.6`、`~max_speed=0.8`。
+等待开始、取消或到达时间限制时，发布的 vx/vy 都为零。Gazebo 模型由绝对位置更新，
+其内部 twist 保持零，DWA 从 `/dynamic_obstacle_states` 获取真实规划速度。
+
+数量增减、seed、时间限制和多余模型删除仍由原 GUI/服务流程管理，master 仍只需运行
+`dynamic_obstacles.py`。场景的通行性需要结合数量、seed 和控制器进行闭环验证。
+
 ## Robot 端 Qt GUI
 
 Ubuntu 20.04 / ROS Noetic 推荐使用系统 Python 和 PyQt5。robot 端安装一次界面依赖：
