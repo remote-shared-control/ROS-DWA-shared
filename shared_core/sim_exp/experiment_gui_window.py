@@ -135,7 +135,7 @@ class ExperimentWindow(QtWidgets.QMainWindow):
         status_layout = QtWidgets.QVBoxLayout(status_group)
         self.phase = QtWidgets.QLabel("等待 master 端障碍物程序")
         self.phase.setStyleSheet("font-weight: 600; font-size: 15px;")
-        self.detail = QtWidgets.QLabel("master 端保持运行 dynamic_obstacles.py。")
+        self.detail = QtWidgets.QLabel("master 端运行所选场景脚本。")
         self.detail.setStyleSheet("color: #667789;")
         self.detail.setWordWrap(True)
         self.progress = QtWidgets.QProgressBar()
@@ -240,7 +240,7 @@ class ExperimentWindow(QtWidgets.QMainWindow):
                 text += "  ·  " + state["reason"]
             self.detail.setText(text)
         else:
-            self.detail.setText("master 端保持运行 dynamic_obstacles.py；请确认两端 ROS 网络连接。")
+            self.detail.setText("master 端运行 dynamic_obstacles.py 或 dynamic_obstacle1.py；请确认两端 ROS 网络连接。")
         if running and self.received_at is not None and not fresh and not self.stopping:
             self.stop_experiment("与 master 的状态连接超时，停止本次实验")
 
