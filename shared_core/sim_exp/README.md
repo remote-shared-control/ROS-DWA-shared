@@ -10,10 +10,11 @@
 | --- | --- | --- |
 | `dynamic_obstacles.py` | 原场景，障碍物沿 `-x` 移动，默认速度 0.6～1.0 m/s | `sim_exp_obstacles.launch` |
 | `dynamic_obstacle1.py` | 新场景，3 m 处向右横穿、6 m 处向左横穿，默认速度 0.6～0.8 m/s | `sim_exp_obstacles1.launch` |
+| `dynamic_obstacle2.py` | 将 0～9 m 按 n 等分，在内部等分点交替向右、向左横穿，默认速度 0.6～0.8 m/s | `sim_exp_obstacles2.launch` |
 
-原来的 `dynamic_obstacles.py` 保留横穿修改之前的实现。两份脚本都支持现有 GUI、
+原来的 `dynamic_obstacles.py` 保留横穿修改之前的实现。三份脚本都支持现有 GUI、
 seed、数量、时间限制和多余模型删除。Robot 端 GUI 不需要调整，master 运行的脚本决定场景。
-切换前停止当前实验和场景程序，两份 master 脚本二选一运行，使用同一组服务和模型名。
+切换前停止当前实验和场景程序，master 每次只运行其中一份脚本，使用同一组服务和模型名。
 
 ## 新场景 dynamic_obstacle1.py：两处反向横穿
 
@@ -37,6 +38,36 @@ master 参数 `~right_crossing_x`、`~left_crossing_x` 可调整两个横穿位�
 数量增减、seed、时间限制和多余模型删除仍由原 GUI/服务流程管理。横穿场景的 master
 运行 `python3 dynamic_obstacle1.py`，或 `roslaunch shared_core sim_exp_obstacles1.launch`。
 场景的通行性需要结合数量、seed 和控制器进行闭环验证。
+
+## 新场景 dynamic_obstacle2.py：n 等分交替横穿
+
+`n` 是 0～9 m 的等分段数，必须是大于等于 2 的整数，默认 3。
+横穿位置为 `x=9*k/n`（`k=1,...,n-1`），只使用内部等分点，不在 0 m、9 m 端点设置。
+按 x 从小到大，方向依次为右、左、右、左；仍以机器人朝 `+x` 为参照。
+
+| n | 横穿位置（m） | 对应方向 |
+| --- | --- | --- |
+| 2 | 4.5 | 右 |
+| 3 | 3、6 | 右、左 |
+| 5 | 1.8、3.6、5.4、7.2 | 右、左、右、左 |
+
+master 端将 `dynamic_obstacle2.py` 和 `experiment_protocol.py` 放在同一目录，运行：
+
+```bash
+python3 dynamic_obstacle2.py _n:=5
+```
+
+或者从已加载工作区的终端运行：
+
+```bash
+roslaunch shared_core sim_exp_obstacles2.launch n:=5
+```
+
+也可直接修改脚本 `CONFIG` 中的 `'n': 3`；命令行参数优先于此默认值。
+GUI 的障碍物数量仍为所有横穿组的总数，按编号轮流分配到各组，各组数量最多差一个。
+数量小于 `n-1` 时，只有前面的相应横穿位置生成障碍物；数量为零时不生成障碍物。
+速度、seed、y 循环边界与 `dynamic_obstacle1.py` 一致；同步开始、时间限制停止和多余模型删除
+沿用现有流程。`n` 在 master 脚本启动时确定，调整后重启该场景脚本。
 
 ## Robot 端 Qt GUI
 
@@ -104,7 +135,7 @@ PySide6 核心窗口组件作为兼容绑定；Ubuntu Noetic 上优先使用上�
 
 先保留原来的 Gazebo、机器人和传感器启动流程。两端连接同一个 ROS Master，
 配置各自可被另一端访问的 `ROS_IP` 或 `ROS_HOSTNAME`，并接收同一个 Gazebo `/clock`。
-障碍物脚本会在节点初始化前自动设置 `/use_sim_time=true`；两个 launch 文件也已
+障碍物脚本会在节点初始化前自动设置 `/use_sim_time=true`；场景对应的 launch 文件也已
 包含该参数，不需要手动运行 `rosparam set`。
 
 在 **master/Gazebo 端**，停止原来的障碍物移动脚本，再运行：
