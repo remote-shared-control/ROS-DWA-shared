@@ -289,6 +289,9 @@ def cal_time(cube, transition, v, w, T):
         ``t_constant = max(tv, tw)``; ``times`` starts at 0 and ends exactly at
         ``min(t_constant, T)``; ``states`` contains corresponding midpoint-vw
         states [x, y, theta, v, w]. A zero-length transition has one sample.
+        Optional ``check_from`` starts collision checks at that time from t=0
+        (inclusive), while keeping the motion and returned TTC relative to t=0.
+        It defaults to 0, preserving initial-contact checks for other callers.
     v, w : float
         Candidate speeds reached at t_constant.
     T : float
@@ -296,8 +299,9 @@ def cal_time(cube, transition, v, w, T):
         the controller supplies config.movetimemin.
 
     先逐时间段检查过渡轨迹。某段碰撞时，取该段所有障碍物的最早 TTC，
-    立即返回。过渡阶段安全时，才把障碍物平移到 t_constant，使用该时刻
-    的机器人位姿求圆心、坐标转换和边界方程；最终加回 t_constant。
+    立即返回。check_from 之前的运动只用于推算位姿，不做碰撞判定。
+    匀速阶段把机器人和障碍物推进到 max(t_constant, check_from)，
+    再求边界方程；返回的 TTC 仍从 t=0 起算。
     """
     T = float(T)
     no_collision = T + 1.0
@@ -314,19 +318,32 @@ def cal_time(cube, transition, v, w, T):
             or abs(times[-1] - min(t_constant, T)) > 1e-9
             or any(b <= a for a, b in zip(times, times[1:]))):
         raise ValueError("Transition times must cover [0, min(t_constant, T)]")
+    check_from = float(transition.get("check_from", 0.0))
+    if not math.isfinite(check_from) or check_from < 0.0:
+        raise ValueError("check_from must be finite and nonnegative")
+    if check_from > T:
+        return no_collision
     transition_padding = prepared.transition_padding if t_constant > 0.0 else 0.0
-    initial_x, initial_y = float(states[0][0]), float(states[0][1])
-    for obstacle in obstacles:
-        if _clip_rectangle(obstacle, initial_x, initial_y, 0.0, 0.0, 0.0,
-                           padding=transition_padding) is not None:
-            return 0.0
+    if check_from == 0.0:
+        initial_x, initial_y = float(states[0][0]), float(states[0][1])
+        for obstacle in obstacles:
+            if _clip_rectangle(obstacle, initial_x, initial_y, 0.0, 0.0, 0.0,
+                               padding=transition_padding) is not None:
+                return 0.0
 
     for i in range(len(times) - 1):
         start, end = float(times[i]), float(times[i + 1])
+        if end < check_from:
+            continue
         duration = end - start
         px, py = float(states[i][0]), float(states[i][1])
         vx = (float(states[i + 1][0]) - px) / duration
         vy = (float(states[i + 1][1]) - py) / duration
+        if start < check_from:
+            px += vx * (check_from - start)
+            py += vy * (check_from - start)
+            start = check_from
+            duration = end - start
         earliest = None
         for obstacle in obstacles:
             hit = _clip_rectangle(
@@ -341,25 +358,37 @@ def cal_time(cube, transition, v, w, T):
 
     if t_constant >= T:
         return no_collision
-    remaining = T - t_constant
+    constant_start = max(t_constant, check_from)
+    pose = states[-1]
+    if constant_start > t_constant:
+        # Advance along the exact line/arc, including the skipped interval.
+        elapsed = constant_start - t_constant
+        half_angle = 0.5 * float(w) * elapsed
+        travel = float(v) * elapsed * (
+            math.sin(half_angle) / half_angle if half_angle else 1.0)
+        theta = float(pose[2])
+        pose = (float(pose[0]) + travel * math.cos(theta + half_angle),
+                float(pose[1]) + travel * math.sin(theta + half_angle),
+                theta + float(w) * elapsed)
+    remaining = T - constant_start
     result = no_collision
-    robot_bounds = _constant_swept_bounds(states[-1], v, w, remaining)
+    robot_bounds = _constant_swept_bounds(pose, v, w, remaining)
     robot_scale = max(1.0, *(abs(value) for value in robot_bounds))
     robot_speed = abs(float(v))
     for obstacle in obstacles:
         # Once a hit is known, a later obstacle only matters up to that time.
         # The full-horizon robot box remains a conservative bound for this
         # shorter interval; obstacle motion can use the tighter interval.
-        horizon = min(remaining, result - t_constant)
+        horizon = min(remaining, result - constant_start)
         if not _swept_bounds_overlap(robot_bounds, robot_scale, robot_speed,
-                                     obstacle, t_constant, horizon):
+                                     obstacle, constant_start, horizon):
             continue
         hit = _constant_collision_time(
-            obstacle, (obstacle.vx, obstacle.vy), states[-1], v, w, horizon,
-            obstacle.vx * t_constant, obstacle.vy * t_constant,
+            obstacle, (obstacle.vx, obstacle.vy), pose, v, w, horizon,
+            obstacle.vx * constant_start, obstacle.vy * constant_start,
         )
         if hit is not None:
-            result = min(result, t_constant + hit)
+            result = min(result, constant_start + hit)
     return result
 
 

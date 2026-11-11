@@ -109,13 +109,13 @@ class Config():
         self.max_speed = 1.0  # [m/s]
         self.min_speed = -1.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
-        self.max_yawrate = 1.0 # [rad/s]
+        self.max_yawrate = 1.4 # [rad/s]
         self.max_accel = 2.5  # [m/ss]
         self.max_dyawrate = 3.2  # [rad/ss]
         ##################################################33
-        self.v_reso = 0.2  # [m/s]
+        self.v_reso = 0.1  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
-        self.yawrate_reso = 0.05  # [rad/s]
+        self.yawrate_reso = 0.1  # [rad/s]
         #######################################################
         self.dt = 0.4  # [s]
         self.dtsys = 0.1  # [s]
@@ -132,7 +132,7 @@ class Config():
                 self.trajectory_times, self.trajectory_times[1:]
             )
         )
-        self.movetimemin = 2.0
+        self.movetimemin = 2.4
         self.goal_radius=0.4
         #########################################
         # self.speed_cost_gain = 1.5 
@@ -152,8 +152,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.225 # [m]
-        self.robot_radius_static = 0.21 # [m]
+        self.robot_radius = 0.212 # [m]
 
         self.cube_half_size=0.15
         self.obs_radius = self.cube_half_size  # Circular moving obstacle radius.

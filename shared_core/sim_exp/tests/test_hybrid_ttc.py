@@ -155,6 +155,7 @@ class HybridTrajectoryTests(unittest.TestCase):
         solver.assert_called_once()
         self.assertEqual(solver.call_args.args[-1], config.movetimemin)
         self.assertEqual(solver.call_args.args[1]["times"][-1], config.movetimemin)
+        self.assertEqual(solver.call_args.args[1]["check_from"], config.trajectory_times[1])
 
     def test_transition_after_static_horizon_continues_acceleration(self):
         config = config_for(static_horizon=0.8)
@@ -279,6 +280,94 @@ class HybridSelectionTests(unittest.TestCase):
         result = self.select({0.1: -0.2, 0.2: 0.0, 0.3: -0.1}, {})
         self.assertEqual(result, [0.3, 0.2])
         self.assertEqual([w for _, w in self.ttc_calls], [0.1, 0.2, 0.3])
+
+    def test_real_ttc_selects_escape_only_when_first_future_pose_is_clear(self):
+        solver = load_solver()
+        for xmax, expected in ((0.01, [0.3, 0.0]), (0.1, [0.0, 0.15])):
+            with self.subTest(xmax=xmax), mock.patch.dict(self.hybrid, {
+                    "cal_time": solver.cal_time,
+                    "prepare_obstacles": solver.prepare_obstacles,
+                    "calc_to_human_cost": lambda *args: 0.0,
+                    "calc_obstacle_cost": lambda *args: 1.0,
+                    "robot_trajectory": self.robot, "human_trajectory": self.human}):
+                cube = SimpleNamespace(data=[rectangle(-0.01, xmax, -0.1, 0.1)])
+                result = self.hybrid["calc_final_input"](
+                    np.zeros(5), [0.0, 0.0], [0.3], [0.0],
+                    self.config, None, cube)
+                self.assertEqual(result, expected)
+
+
+class HybridCheckFromTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.solver = load_solver()
+
+    def solve(self, rows, motion, v=1.0, w=0.0, horizon=3.0):
+        motion = dict(motion, check_from=0.4)
+        cube = SimpleNamespace(data=rows)
+        actual = self.solver.cal_time(cube, motion, v, w, horizon)
+        self.assertEqual(actual, self.solver.cal_time(
+            self.solver.prepare_obstacles(cube), motion, v, w, horizon))
+        return actual
+
+    def test_initial_contact_and_completed_early_segments_are_skipped(self):
+        motion = transition([0.0, 0.2, 1.0], [(0, 0), (0.2, 0), (1, 0)])
+        rows = [rectangle(-0.1, 0.1, -0.1, 0.1),
+                rectangle(0.25, 0.3, -0.1, 0.1)]
+        self.assertEqual(self.solve(rows, motion), 4.0)
+
+    def test_remaining_part_of_first_segment_is_still_continuously_checked(self):
+        motion = transition([0.0, 1.0], [(0, 0), (1, 0)])
+        self.assertAlmostEqual(self.solve(
+            [rectangle(0.45, 0.46, -0.1, 0.1)], motion), 0.45)
+
+    def test_overlap_at_first_checked_pose_is_not_ignored_in_either_phase(self):
+        for motion in (transition([0.0, 1.0], [(0, 0), (1, 0)]),
+                       transition([0.0], [(0, 0)])):
+            with self.subTest(constant_time=motion["t_constant"]):
+                self.assertEqual(self.solve(
+                    [rectangle(0.3, 0.5, -0.1, 0.1)], motion), 0.4)
+
+    def test_contact_at_transition_sample_is_included(self):
+        motion = transition([0.0, 0.4, 1.0], [(0, 0), (0.4, 0), (1, 0)])
+        self.assertEqual(self.solve(
+            [rectangle(0.4, 0.5, -0.1, 0.1)], motion), 0.4)
+
+    def test_constant_phase_advances_robot_and_moving_obstacle_from_switch(self):
+        motion = transition([0.0, 0.2], [(0, 0), (0.1, 0)])
+        self.assertAlmostEqual(self.solve(
+            [rectangle(1.0, 1.1, -0.1, 0.1, vx=0.5)], motion), 2.2)
+
+    def test_circular_motion_ignores_initial_overlap_but_detects_reentry(self):
+        motion = transition([0.0], [(0, 0)])
+        rows = [rectangle(-0.1, 0.1, -0.1, 0.1)]
+        for v in (-1.0, 1.0):
+            for w in (-1.0, 1.0):
+                with self.subTest(v=v, w=w):
+                    self.assertAlmostEqual(self.solve(rows, motion, v, w, horizon=7.0),
+                                           2 * math.pi - math.asin(0.1), places=8)
+
+    def test_stationary_robot_uses_obstacle_position_at_check_time(self):
+        motion = transition([0.0], [(0, 0)])
+        self.assertEqual(self.solve(
+            [rectangle(-0.1, 0.1, -0.1, 0.1, vx=1.0)], motion, v=0.0), 4.0)
+        self.assertEqual(self.solve(
+            [rectangle(1.0, 1.1, -0.1, 0.1, vx=-1.0)], motion, v=0.0), 1.0)
+
+    def test_horizon_contact_is_included_and_later_contact_is_excluded(self):
+        motion = transition([0.0], [(0, 0)])
+        self.assertEqual(self.solve(
+            [rectangle(1.0, 1.1, -0.1, 0.1)], motion, horizon=1.0), 1.0)
+        self.assertEqual(self.solve(
+            [rectangle(1.0001, 1.1, -0.1, 0.1)], motion, horizon=1.0), 2.0)
+
+    def test_horizon_before_first_future_sample_has_no_checked_interval(self):
+        motion = transition([0.0], [(0, 0)])
+        rows = [rectangle(-0.1, 0.1, -0.1, 0.1)]
+        for horizon in (0.0, 0.2):
+            with self.subTest(horizon=horizon):
+                self.assertEqual(self.solve(rows, motion, v=0.0, horizon=horizon),
+                                 horizon + 1.0)
 
 
 class HybridCollisionTests(unittest.TestCase):

@@ -1,4 +1,4 @@
-"""Check that the larger midpoint TTC radius stays within the transition phase."""
+"""Check that the configured midpoint TTC radius stays within the transition phase."""
 
 import ast
 import importlib.util
@@ -44,12 +44,13 @@ class HybridPhaseRadiusTests(unittest.TestCase):
         spec.loader.exec_module(cls.solver)
         cls.CubeReader = load_cube_reader()
 
-    def reader(self):
-        # This separate static-cost radius must not replace either TTC radius.
-        return self.CubeReader(SimpleNamespace(cube_half_size=0.15, robot_radius=0.9))
+    def reader(self, robot_radius=0.225):
+        # Use a distinct transition radius to expose accidental constant-phase padding.
+        return self.CubeReader(SimpleNamespace(
+            cube_half_size=0.15, robot_radius=robot_radius))
 
-    def obstacle(self, center, velocity=(0.0, 0.0)):
-        reader = self.reader()
+    def obstacle(self, center, velocity=(0.0, 0.0), robot_radius=0.225):
+        reader = self.reader(robot_radius)
         pose = SimpleNamespace(
             position=SimpleNamespace(x=center[0], y=center[1]),
             orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0))
@@ -59,15 +60,32 @@ class HybridPhaseRadiusTests(unittest.TestCase):
     def solve(self, reader, transition, v=1.0, w=0.0, horizon=3.0):
         return self.solver.cal_time(reader, transition, v, w, horizon)
 
-    def test_reader_defaults_keep_equation_geometry_at_original_radius(self):
+    def test_reader_uses_configured_transition_radius_and_original_equation_geometry(self):
         reader = self.obstacle((0.0, 0.0))
         self.assertEqual(reader.robot_radius_cal, 0.21)
-        self.assertEqual(reader.robot_radius_transition, 0.225)
+        self.assertEqual(reader.robot_radius_transition, reader.config.robot_radius)
         self.assertEqual(reader.data[0][1:5],
                          [(-0.36, -0.36), (-0.36, 0.36),
                           (0.36, 0.36), (0.36, -0.36)])
         self.assertAlmostEqual(self.solver.prepare_obstacles(reader).transition_padding,
                                0.015)
+
+    def test_transition_collision_uses_configured_radius_including_smaller_values(self):
+        transition = motion([0.0, 1.0], [(0.0, 0.0), (1.0, 0.0)])
+        for radius in (0.18, 0.212, 0.25):
+            with self.subTest(radius=radius):
+                reader = self.obstacle((0.6, 0.0), robot_radius=radius)
+                self.assertEqual(reader.robot_radius_cal, 0.21)
+                self.assertEqual(reader.robot_radius_transition, radius)
+                self.assertAlmostEqual(self.solve(reader, transition),
+                                       0.6 - (0.15 + radius))
+
+    def test_radius_point_212_clears_gap_blocked_by_old_point_225(self):
+        transition = motion([0.0, 1.0], [(0.0, 0.0), (1.0, 0.0)])
+        current = self.obstacle((0.6, 0.37), robot_radius=0.212)
+        larger = self.obstacle((0.6, 0.37), robot_radius=0.225)
+        self.assertEqual(self.solve(current, transition), 4.0)
+        self.assertAlmostEqual(self.solve(larger, transition), 0.225)
 
     def test_transition_detects_obstacle_only_reached_by_the_larger_radius(self):
         # The robot clears the physical obstacle by 0.22 m in the y direction.
@@ -92,6 +110,14 @@ class HybridPhaseRadiusTests(unittest.TestCase):
         reader = self.obstacle((1.6, 0.37))
         transition = motion([0.0, 1.0], [(0.0, 0.0), (0.1, 0.0)])
         self.assertEqual(self.solve(reader, transition), 4.0)
+
+    def test_delayed_start_uses_the_radius_of_the_checked_phase(self):
+        reader = self.obstacle((0.0, 0.37))
+        ramp = motion([0.0, 1.0], [(0.0, 0.0), (0.0, 0.0)])
+        constant = motion([0.0], [(0.0, 0.0)])
+        ramp["check_from"] = constant["check_from"] = 0.4
+        self.assertEqual(self.solve(reader, ramp, v=0.0), 0.4)
+        self.assertEqual(self.solve(reader, constant, v=0.0), 4.0)
 
     def test_circular_constant_phase_does_not_use_the_larger_radius(self):
         transition = motion([0.0, 0.5], [(0.0, 0.0), (0.0, 0.5)])

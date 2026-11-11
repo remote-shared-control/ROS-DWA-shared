@@ -5,6 +5,8 @@
 For each candidate, t_constant = max(t_v, t_w). Keep the midpoint substeps
 through that instant for collision detection, then solve the circular/linear
 motion equations from that pose with obstacles advanced to the same time.
+TTC checks start at the first future static-trajectory sample, skipping the
+current pose and the motion before that sample.
 """
 
 # Author: Connor McGuile
@@ -117,11 +119,11 @@ class Config():
         self.max_speed = 1.0  # [m/s]
         self.min_speed = -1.0  # [m/s]
         # self.max_yawrate = 1.2  # [rad/s]
-        self.max_yawrate = 1.0 # [rad/s]
+        self.max_yawrate = 1.4 # [rad/s]
         self.max_accel = 2.5  # [m/ss]
         self.max_dyawrate = 3.2  # [rad/ss]
         ##################################################33
-        self.v_reso = 0.2  # [m/s]
+        self.v_reso = 0.1  # [m/s]
         # self.yawrate_reso = 0.1  # [rad/s]
         self.yawrate_reso = 0.05  # [rad/s]
         #######################################################
@@ -141,7 +143,7 @@ class Config():
             )
         )
         self.predict_time = 2.4  # [s]
-        self.movetimemin = 5.0
+        self.movetimemin = 2.4  # [s]
         self.goal_radius=0.4
         #########################################
         # self.speed_cost_gain = 1.5 
@@ -153,7 +155,7 @@ class Config():
         #     self.obs_cost_gain = 1.0 #lower z= fearless
 
         self.to_human_cost_gain = 1.0 #lower = detour
-        self.speed_cost_gain = 1.0 #lower = faster
+        self.speed_cost_gain = 2.0 #lower = faster
         self.obs_cost_gain = 1.0 #lower z= fearless
         self.move_obs_gain = 1.0
         # if args.param == 3:
@@ -161,7 +163,7 @@ class Config():
         #     self.speed_cost_gain = 1.0 #lower = faster
         #     self.obs_cost_gain = 1.0 #lower z= fearless
         # #############################
-        self.robot_radius = 0.225  # [m]
+        self.robot_radius = 0.212  # [m]
 
         self.cube_half_size=0.15
 
@@ -645,7 +647,8 @@ def calc_final_input(x, u, vs, ws, config, ob,cube,step=None, log_writer=None):
         speed_cost = config.speed_cost_gain *(1-abs(config.human.linear.x - v)/(config.max_speed-config.min_speed))
         for w, to_human_cost in yaw_costs:
 
-            ttc_motion = {}
+            # Match traj[1:] in the static check: start at the first future sample.
+            ttc_motion = {"check_from": config.trajectory_times[1]}
             traj = calc_trajectory_midpoint_vw(
                 xinit, v, w, config, linear_plan, ttc_motion
             )
