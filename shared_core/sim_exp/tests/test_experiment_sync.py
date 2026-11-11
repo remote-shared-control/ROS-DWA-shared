@@ -263,12 +263,12 @@ class ObstacleFrameTests(unittest.TestCase):
             "bisect": bisect,
         })
         publisher, setter = Mock(), Mock(return_value=SimpleNamespace(success=True))
-        cfg = {"duration": 70, "y_min": -7.0, "y_max": 7.0, "height": 0.2}
-        args = (0.0, [[(0.0, 3.0, 1.0, 0.0, -0.8)]], [[0.0]], cfg, setter, publisher)
+        cfg = {"duration": 70, "x_min": 0.5, "height": 0.2}
+        args = (0.0, [[(0.0, 10.0, 1.0, 0.8)]], [[0.0]], cfg, setter, publisher)
         ns["publish_frame"](*args, moving=False)
         self.assertEqual(publisher.publish.call_args.args[0].twist[0].linear.x, 0.0)
         ns["publish_frame"](*args, moving=True)
-        self.assertEqual(publisher.publish.call_args.args[0].twist[0].linear.y, -0.8)
+        self.assertEqual(publisher.publish.call_args.args[0].twist[0].linear.x, -0.8)
         ns["publish_frame"](70.0, *args[1:], moving=True)
         self.assertEqual(publisher.publish.call_args.args[0].twist[0].linear.x, 0.0)
 

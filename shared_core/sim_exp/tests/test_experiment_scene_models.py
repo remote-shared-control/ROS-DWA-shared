@@ -44,7 +44,7 @@ class SceneModelsTests(unittest.TestCase):
 
     def sync(self, count):
         self.cfg["num_obstacles"] = count
-        self.models.sync(self.cfg, [[(0.0, float(idx), 0.0, 0.0, 0.8)] for idx in range(count)])
+        self.models.sync(self.cfg, [[(0.0, float(idx), 0.0, 0.8)] for idx in range(count)])
 
     def managed(self):
         return self.world - {"limo", "ground_plane", "obstacle_static"}

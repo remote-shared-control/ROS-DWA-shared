@@ -4,7 +4,18 @@
 `direct.py` 均通过共同 ROS 仿真起点放行，DWA/TTC 计算、候选速度和已有记录开关
 保持原值。`sim` 和包外的构建配置未修改。
 
-## 当前环境：两处反向横穿
+## 选择场景脚本
+
+| master 端脚本 | 场景 | launch 入口 |
+| --- | --- | --- |
+| `dynamic_obstacles.py` | 原场景，障碍物沿 `-x` 移动，默认速度 0.6～1.0 m/s | `sim_exp_obstacles.launch` |
+| `dynamic_obstacle1.py` | 新场景，3 m 处向右横穿、6 m 处向左横穿，默认速度 0.6～0.8 m/s | `sim_exp_obstacles1.launch` |
+
+原来的 `dynamic_obstacles.py` 保留横穿修改之前的实现。两份脚本都支持现有 GUI、
+seed、数量、时间限制和多余模型删除。Robot 端 GUI 不需要调整，master 运行的脚本决定场景。
+切换前停止当前实验和场景程序，两份 master 脚本二选一运行，使用同一组服务和模型名。
+
+## 新场景 dynamic_obstacle1.py：两处反向横穿
 
 以机器人初始朝世界坐标 `+x` 前进为参照，左侧为 `+y`，右侧为 `-y`：
 
@@ -23,8 +34,9 @@ master 参数 `~right_crossing_x`、`~left_crossing_x` 可调整两个横穿位�
 等待开始、取消或到达时间限制时，发布的 vx/vy 都为零。Gazebo 模型由绝对位置更新，
 其内部 twist 保持零，DWA 从 `/dynamic_obstacle_states` 获取真实规划速度。
 
-数量增减、seed、时间限制和多余模型删除仍由原 GUI/服务流程管理，master 仍只需运行
-`dynamic_obstacles.py`。场景的通行性需要结合数量、seed 和控制器进行闭环验证。
+数量增减、seed、时间限制和多余模型删除仍由原 GUI/服务流程管理。横穿场景的 master
+运行 `python3 dynamic_obstacle1.py`，或 `roslaunch shared_core sim_exp_obstacles1.launch`。
+场景的通行性需要结合数量、seed 和控制器进行闭环验证。
 
 ## Robot 端 Qt GUI
 
@@ -41,11 +53,17 @@ sudo apt install python3-pyqt5
 sudo apt install ros-noetic-dynamic-reconfigure
 ```
 
-先启动原来的 Gazebo、机器人、传感器及人工速度输入节点。在 master 端更新本目录的
-`dynamic_obstacles.py` 和 `experiment_protocol.py`，将它们放在同一个目录，然后只运行：
+先启动原来的 Gazebo、机器人、传感器及人工速度输入节点。在 master 端将选中的场景
+脚本和 `experiment_protocol.py` 放在同一个目录。原场景运行：
 
 ```bash
 python3 dynamic_obstacles.py
+```
+
+新横穿场景则运行：
+
+```bash
+python3 dynamic_obstacle1.py
 ```
 
 master 端不需要 GUI，也不需要每次修改 seed、数量、时限参数或重启障碍物程序。
@@ -162,7 +180,7 @@ master 启动时及每次实验准备时，都通过 `/gazebo/get_world_properti
 任何删除失败、缺失模型或残留模型都会阻止启动，界面和日志显示失败原因。
 
 到达时限后，本次保留的 N 个模型按原方式冻结；下一次调低数量时会删除多出来的模型。
-master 端仍只运行 `python3 dynamic_obstacles.py`，所有 Gazebo 服务调用都在该进程内完成。
+master 端只需运行所选的一个场景脚本，所有 Gazebo 服务调用都在该进程内完成。
 
 原来的 `RECORDER` / `RECORDER_CSV` 开关保留。启用 rosbag 时，记录仍在等待起点前
 启动，因此 bag 可包含准备阶段；结果计时和坐标距离从本次 t0 放行处开始计算。

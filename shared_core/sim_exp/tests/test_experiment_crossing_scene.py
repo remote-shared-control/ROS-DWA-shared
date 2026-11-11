@@ -34,7 +34,7 @@ class ModelState:
 
 
 def load_scene_functions():
-    path = DIRECTORY / "dynamic_obstacles.py"
+    path = DIRECTORY / "dynamic_obstacle1.py"
     tree = ast.parse(path.read_text())
     config = next(node for node in tree.body if isinstance(node, ast.Assign)
                   and any(isinstance(target, ast.Name) and target.id == "CONFIG"

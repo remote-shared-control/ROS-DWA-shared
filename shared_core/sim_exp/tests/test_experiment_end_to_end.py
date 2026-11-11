@@ -3,10 +3,13 @@
 This verifies application behavior, not ROS transport or Gazebo physics.
 """
 
+import ast
 import bisect
+import heapq
 from copy import deepcopy
 import json
 import random
+from pathlib import Path
 import re
 import threading
 import time
@@ -123,6 +126,8 @@ class RosBus:
 
 
 class RepeatedExperimentTests(unittest.TestCase):
+    scene_file = "dynamic_obstacles.py"
+
     def setUp(self):
         self.ros = RosBus()
         self.clients = []
@@ -135,21 +140,21 @@ class RepeatedExperimentTests(unittest.TestCase):
             "ModelStates": lambda: SimpleNamespace(name=[], pose=[], twist=[]),
             "String": Message, "Int32": Message, "Trigger": object(),
             "TriggerResponse": Message, "bisect": bisect, "random": random,
-            "re": re, "validate_seed": validate_seed, "Reconfigure": object(),
+            "heapq": heapq, "re": re, "validate_seed": validate_seed, "Reconfigure": object(),
             "validate_obstacle_count": validate_obstacle_count, "validate_duration": validate_duration,
             "CYLINDER_SDF": "model {name} radius {radius} length {length}",
             "ReconfigureResponse": Message, "IntParameter": Message, "StrParameter": Message, "DoubleParameter": Message,
             "DynamicConfig": lambda: Message(ints=[], strs=[]),
         }
-        definitions("dynamic_obstacles.py", {
-            "plan_scene", "state_at", "make_pose",
+        definitions(self.scene_file, {
+            "plan_scene", "choose_respawn_y", "state_at", "make_pose",
             "publish_frame", "ensure_model", "SceneModels", "ObstacleExperiments",
         }, namespace)
-        self.cfg = {
-            "num_obstacles": 40, "right_crossing_x": 3.0, "left_crossing_x": 6.0,
-            "y_min": -7.0, "y_max": 7.0, "min_speed": 0.6, "max_speed": 0.8,
-            "height": 0.2, "radius": 0.15, "length": 0.4, "duration": 70.0, "seed": 42, "rate": 20,
-        }
+        tree = ast.parse((Path(__file__).resolve().parents[1] / self.scene_file).read_text())
+        config = next(node for node in tree.body if isinstance(node, ast.Assign)
+                      and any(isinstance(target, ast.Name) and target.id == "CONFIG"
+                              for target in node.targets))
+        self.cfg = ast.literal_eval(config.value)
         self.tracks, self.starts = namespace["plan_scene"](self.cfg)
         self.state_at = namespace["state_at"]
         self.server = namespace["ObstacleExperiments"](
@@ -241,7 +246,7 @@ class RepeatedExperimentTests(unittest.TestCase):
                 self.assertTrue(all((t.linear.x, t.linear.y) == (0.0, 0.0) for t in
                                     self.ros.messages["/dynamic_obstacle_states"].twist))
                 for idx, (track, starts) in enumerate(zip(self.tracks, self.starts)):
-                    x, y, _, _ = self.state_at(track, starts, 70.0, self.cfg)
+                    x, y = self.state_at(track, starts, 70.0, self.cfg)[:2]
                     self.assertEqual(self.ros.positions[f"obstacle_{idx + 1}"], (x, y, 0.2))
                 final = dict(self.ros.positions)
                 self.advance(t0 + 71 * NSEC)
@@ -308,6 +313,10 @@ class RepeatedExperimentTests(unittest.TestCase):
                 self.assertEqual(self.ros.other_models, {"limo", "ground_plane", "obstacle_static"})
                 client.close()
                 previous_count = count
+
+
+class CrossingRepeatedExperimentTests(RepeatedExperimentTests):
+    scene_file = "dynamic_obstacle1.py"
 
 
 if __name__ == "__main__":
