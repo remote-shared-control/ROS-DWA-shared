@@ -34,7 +34,7 @@ CONFIG = {
     'y_min': -4.0,
     'y_max': 4.0,
     'min_speed': 0.6,
-    'max_speed': 1.0,
+    'max_speed': 0.8,
     'radius': 0.15,
     'length': 0.4,
     'height': 0.2,
