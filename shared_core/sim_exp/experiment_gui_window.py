@@ -240,7 +240,7 @@ class ExperimentWindow(QtWidgets.QMainWindow):
                 text += "  ·  " + state["reason"]
             self.detail.setText(text)
         else:
-            self.detail.setText("master 端运行 dynamic_obstacles.py 或 dynamic_obstacle1.py；请确认两端 ROS 网络连接。")
+            self.detail.setText("master 端运行所选的障碍物场景脚本；请确认两端 ROS 网络连接。")
         if running and self.received_at is not None and not fresh and not self.stopping:
             self.stop_experiment("与 master 的状态连接超时，停止本次实验")
 
